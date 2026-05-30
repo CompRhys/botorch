@@ -91,6 +91,7 @@ botorch/version.py
 sphinx/build/
 
 # Docusaurus
+**/yarn.lock
 website/build/
 website/i18n/
 website/node_modules/
@@ -101,6 +102,10 @@ website/_tutorials/
 website/static/files/
 docs/tutorials/*
 !docs/tutorials/index.mdx
+
+# Generated for community noteboooks
+docs/notebooks_community/*
+!docs/notebooks_community/index.mdx
 
 ## Generated for Sphinx
 website/pages/api/

@@ -18,7 +18,7 @@ class BotorchWarning(Warning):
 
 
 class BadInitialCandidatesWarning(BotorchWarning):
-    r"""Warning issued if set of initial candidates for optimziation is bad."""
+    r"""Warning issued if set of initial candidates for optimization is bad."""
 
     pass
 
@@ -72,7 +72,6 @@ def legacy_ei_numerics_warning(legacy_name: str) -> None:
 
     Args:
         legacy_name: The name of the legacy EI acquisition function.
-        logei_name: The name of the associated LogEI acquisition function.
     """
     legacy_to_logei = {
         "ExpectedImprovement": "LogExpectedImprovement",
@@ -105,6 +104,6 @@ def _get_single_precision_warning(dtype_str: str) -> str:
         f"The model inputs are of type {dtype_str}. It is strongly recommended "
         "to use double precision in BoTorch, as this improves both "
         "precision and stability and can help avoid numerical errors. "
-        "See https://github.com/pytorch/botorch/discussions/1444"
+        "See https://github.com/meta-pytorch/botorch/discussions/1444"
     )
     return msg

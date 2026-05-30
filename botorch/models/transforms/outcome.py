@@ -8,7 +8,7 @@ r"""
 Outcome transformations for automatically transforming and un-transforming
 model outputs. Outcome transformations are typically part of a Model and
 applied (i) within the model constructor to transform the train observations
-to the model space, and (ii) in the `Model.posterior` call to untransform
+to the model space, and (ii) in the ``Model.posterior`` call to untransform
 the model posterior back to the original space.
 
 References
@@ -22,6 +22,8 @@ References
 
 from __future__ import annotations
 
+import logging
+import warnings
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 
@@ -33,10 +35,17 @@ from botorch.models.transforms.utils import (
 )
 from botorch.models.utils.assorted import get_task_value_remapping
 from botorch.posteriors import GPyTorchPosterior, Posterior, TransformedPosterior
+from botorch.posteriors.fully_bayesian import GaussianMixturePosterior
 from botorch.utils.transforms import normalize_indices
-from linear_operator.operators import CholLinearOperator, DiagLinearOperator
+from linear_operator.operators import (
+    CholLinearOperator,
+    DiagLinearOperator,
+    TriangularLinearOperator,
+)
 from torch import Tensor
 from torch.nn import Module, ModuleDict
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 class OutcomeTransform(Module, ABC):
@@ -49,10 +58,10 @@ class OutcomeTransform(Module, ABC):
         r"""Transform the outcomes in a model's training targets
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of observation noises
+            Y: A ``batch_shape x n x m``-dim tensor of training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of observation noises
                 associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
 
         Returns:
             A two-tuple with the transformed outcomes:
@@ -66,7 +75,7 @@ class OutcomeTransform(Module, ABC):
         r"""Subset the transform along the output dimension.
 
         This functionality is used to properly treat outcome transformations
-        in the `subset_model` functionality.
+        in the ``subset_model`` functionality.
 
         Args:
             idcs: The output indices to subset the transform to.
@@ -75,8 +84,7 @@ class OutcomeTransform(Module, ABC):
             The current outcome transform, subset to the specified output indices.
         """
         raise NotImplementedError(
-            f"{self.__class__.__name__} does not implement the "
-            "`subset_output` method"
+            f"{self.__class__.__name__} does not implement the `subset_output` method"
         )
 
     def untransform(
@@ -85,10 +93,10 @@ class OutcomeTransform(Module, ABC):
         r"""Un-transform previously transformed outcomes
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of transfomred training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of transformed observation
+            Y: A ``batch_shape x n x m``-dim tensor of transformed training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of transformed observation
                 noises associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
 
         Returns:
             A two-tuple with the un-transformed outcomes:
@@ -103,8 +111,8 @@ class OutcomeTransform(Module, ABC):
     @property
     def _is_linear(self) -> bool:
         """
-        True for transformations such as `Standardize`; these should be able to apply
-        `untransform_posterior` to a GPyTorchPosterior and return a GPyTorchPosterior,
+        True for transformations such as ``Standardize``; these should be able to apply
+        ``untransform_posterior`` to a GPyTorchPosterior and return a GPyTorchPosterior,
         because a multivariate normal distribution should remain multivariate normal
         after applying the transform.
         """
@@ -115,13 +123,13 @@ class OutcomeTransform(Module, ABC):
     ) -> Posterior:
         r"""Un-transform a posterior.
 
-        Posteriors with `_is_linear=True` should return a `GPyTorchPosterior` when
-        `posterior` is a `GPyTorchPosterior`. Posteriors with `_is_linear=False`
-        likely return a `TransformedPosterior` instead.
+        Posteriors with ``_is_linear=True`` should return a ``GPyTorchPosterior`` when
+        ``posterior`` is a ``GPyTorchPosterior``. Posteriors with ``_is_linear=False``
+        likely return a ``TransformedPosterior`` instead.
 
         Args:
             posterior: A posterior in the transformed space.
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
 
         Returns:
             The un-transformed posterior.
@@ -151,10 +159,10 @@ class ChainedOutcomeTransform(OutcomeTransform, ModuleDict):
         r"""Transform the outcomes in a model's training targets
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of observation noises
+            Y: A ``batch_shape x n x m``-dim tensor of training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of observation noises
                 associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
 
         Returns:
             A two-tuple with the transformed outcomes:
@@ -185,10 +193,10 @@ class ChainedOutcomeTransform(OutcomeTransform, ModuleDict):
         r"""Un-transform previously transformed outcomes
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of transfomred training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of transformed observation
+            Y: A ``batch_shape x n x m``-dim tensor of transformed training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of transformed observation
                 noises associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
 
         Returns:
             A two-tuple with the un-transformed outcomes:
@@ -203,7 +211,7 @@ class ChainedOutcomeTransform(OutcomeTransform, ModuleDict):
     @property
     def _is_linear(self) -> bool:
         """
-        A `ChainedOutcomeTransform` is linear only if all of the component transforms
+        A ``ChainedOutcomeTransform`` is linear only if all of the component transforms
         are linear.
         """
         return all(octf._is_linear for octf in self.values())
@@ -215,7 +223,7 @@ class ChainedOutcomeTransform(OutcomeTransform, ModuleDict):
 
         Args:
             posterior: A posterior in the transformed space.
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
 
         Returns:
             The un-transformed posterior.
@@ -248,7 +256,7 @@ class Standardize(OutcomeTransform):
             outputs: Which of the outputs to standardize. If omitted, all
                 outputs will be standardized.
             batch_shape: The batch_shape of the training targets.
-            min_stddv: The minimum standard deviation for which to perform
+            min_stdv: The minimum standard deviation for which to perform
                 standardization (if lower, only de-mean the data).
         """
         super().__init__()
@@ -267,7 +275,7 @@ class Standardize(OutcomeTransform):
         r"""Get per-input means and stdvs.
 
         Args:
-            X: A `batch_shape x n x d`-dim tensor of input parameters.
+            X: A ``batch_shape x n x d``-dim tensor of input parameters.
             include_stdvs_sq: Whether to include the stdvs squared.
                 This parameter is not used by this method
 
@@ -284,8 +292,8 @@ class Standardize(OutcomeTransform):
         """Validate training inputs.
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of observation noises.
+            Y: A ``batch_shape x n x m``-dim tensor of training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of observation noises.
         """
         if Y.shape[:-2] != self._batch_shape:
             raise RuntimeError(
@@ -311,12 +319,12 @@ class Standardize(OutcomeTransform):
         applies the normalization using the module state.
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of observation noises
+            Y: A ``batch_shape x n x m``-dim tensor of training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of observation noises
                 associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
                 This argument is not used by this transform, but it is used by
-                its subclass, `StratifiedStandardize`.
+                its subclass, ``StratifiedStandardize``.
 
         Returns:
             A two-tuple with the transformed outcomes:
@@ -331,9 +339,9 @@ class Standardize(OutcomeTransform):
                     (*Y.shape[:-2], 1, Y.shape[-1]), dtype=Y.dtype, device=Y.device
                 )
             else:
-                stdvs = Y.std(dim=-2, keepdim=True)
+                stdvs = nanstd(X=Y, dim=-2, keepdim=True)
             stdvs = stdvs.where(stdvs >= self._min_stdv, torch.full_like(stdvs, 1.0))
-            means = Y.mean(dim=-2, keepdim=True)
+            means = Y.nanmean(dim=-2, keepdim=True)
             if self._outputs is not None:
                 unused = [i for i in range(self._m) if i not in self._outputs]
                 means[..., unused] = 0.0
@@ -389,12 +397,12 @@ class Standardize(OutcomeTransform):
         r"""Un-standardize outcomes.
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of standardized targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of standardized observation
+            Y: A ``batch_shape x n x m``-dim tensor of standardized targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of standardized observation
                 noises associated with the targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of inputs (if applicable).
                 This argument is not used by this transform, but it is used by
-                its subclass, `StratifiedStandardize`.
+                its subclass, ``StratifiedStandardize``.
 
         Returns:
             A two-tuple with the un-standardized outcomes:
@@ -427,14 +435,15 @@ class Standardize(OutcomeTransform):
 
         Args:
             posterior: A posterior in the standardized space.
-            X: A `batch_shape x n x d`-dim tensor of inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of inputs (if applicable).
                 This argument is not used by this transform, but it is used by
-                its subclass, `StratifiedStandardize`.
+                its subclass, ``StratifiedStandardize``.
 
         Returns:
             The un-standardized posterior. If the input posterior is a
-            `GPyTorchPosterior`, return a `GPyTorchPosterior`. Otherwise, return a
-            `TransformedPosterior`.
+            ``GPyTorchPosterior`` or ``GaussianMixturePosterior``, return
+            the same type with analytically rescaled distribution. Otherwise,
+            return a ``TransformedPosterior``.
         """
         if self._outputs is not None:
             raise NotImplementedError(
@@ -448,7 +457,7 @@ class Standardize(OutcomeTransform):
                 "means and standard deviations need to be computed."
             )
         is_mtgp_posterior = False
-        if type(posterior) is GPyTorchPosterior:
+        if type(posterior) in (GPyTorchPosterior, GaussianMixturePosterior):
             is_mtgp_posterior = posterior._is_mt
         if not self._m == posterior._extended_shape()[-1] and not is_mtgp_posterior:
             raise RuntimeError(
@@ -457,7 +466,7 @@ class Standardize(OutcomeTransform):
                 f"{posterior._extended_shape()[-1]}."
             )
 
-        if type(posterior) is not GPyTorchPosterior:
+        if type(posterior) not in (GPyTorchPosterior, GaussianMixturePosterior):
             # fall back to TransformedPosterior
             # this applies to subclasses of GPyTorchPosterior like MultitaskGPPosterior
             return TransformedPosterior(
@@ -488,7 +497,9 @@ class Standardize(OutcomeTransform):
             or mvn._MultivariateNormal__unbroadcasted_scale_tril is not None
         ):
             # if already computed, we can save a lot of time using scale_tril
-            covar_tf = CholLinearOperator(mvn.scale_tril * scale_fac.unsqueeze(-1))
+            covar_tf = CholLinearOperator(
+                TriangularLinearOperator(mvn.scale_tril * scale_fac.unsqueeze(-1))
+            )
         else:
             lcv = mvn.lazy_covariance_matrix
             scale_fac = scale_fac.expand(lcv.shape[:-1])
@@ -497,7 +508,7 @@ class Standardize(OutcomeTransform):
 
         kwargs = {"interleaved": mvn._interleaved} if posterior._is_mt else {}
         mvn_tf = mvn.__class__(mean=mean_tf, covariance_matrix=covar_tf, **kwargs)
-        return GPyTorchPosterior(mvn_tf)
+        return type(posterior)(mvn_tf)
 
 
 class StratifiedStandardize(Standardize):
@@ -511,30 +522,36 @@ class StratifiedStandardize(Standardize):
 
     def __init__(
         self,
-        task_values: Tensor,
         stratification_idx: int,
+        all_task_values: Tensor,
         batch_shape: torch.Size = torch.Size(),  # noqa: B008
         min_stdv: float = 1e-8,
-        # dtype: torch.dtype = torch.double,
+        dtype: torch.dtype = torch.double,
     ) -> None:
         r"""Standardize outcomes (zero mean, unit variance) along stratification dim.
 
-        Note: This currenlty only supports single output models
+        Note: This currently only supports single output models
         (including multi-task models that have a single output).
 
         Args:
-            task_values: `t`-dim tensor of task values.
-            stratification_idx: The index of the stratification dimension.
+            stratification_idx: The index of the stratification dimension in the
+                input tensor X.
+            all_task_values: ``t``-dim tensor of all possible task values that could
+                appear in the dataset.
             batch_shape: The batch_shape of the training targets.
-            min_stddv: The minimum standard deviation for which to perform
+            min_stdv: The minimum standard deviation for which to perform
                 standardization (if lower, only de-mean the data).
+            dtype: The data type for internal computations.
         """
         OutcomeTransform.__init__(self)
         self._stratification_idx = stratification_idx
-        task_values = task_values.unique(sorted=True)
-        self.strata_mapping = get_task_value_remapping(task_values, dtype=torch.double)
+        all_task_values = all_task_values.unique(sorted=True)
+        self.strata_mapping = get_task_value_remapping(
+            all_task_values=all_task_values,
+            dtype=dtype,
+        )
         if self.strata_mapping is None:
-            self.strata_mapping = task_values
+            self.strata_mapping = all_task_values
         n_strata = self.strata_mapping.shape[0]
         self._min_stdv = min_stdv
         self.register_buffer("means", torch.zeros(*batch_shape, n_strata, 1))
@@ -555,10 +572,10 @@ class StratifiedStandardize(Standardize):
         applies the normalization using the module state.
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of observation noises
+            Y: A ``batch_shape x n x m``-dim tensor of training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of observation noises
                 associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of input parameters.
+            X: A ``batch_shape x n x d``-dim tensor of input parameters.
 
         Returns:
             A two-tuple with the transformed outcomes:
@@ -605,7 +622,7 @@ class StratifiedStandardize(Standardize):
         r"""Get per-input means and stdvs.
 
         Args:
-            X: A `batch_shape x n x d`-dim tensor of input parameters.
+            X: A ``batch_shape x n x d``-dim tensor of input parameters.
             include_stdvs_sq: Whether to include the stdvs squared.
 
         Returns:
@@ -616,7 +633,20 @@ class StratifiedStandardize(Standardize):
             - The per-input stdvs squared.
         """
         strata = X[..., self._stratification_idx].long()
-        mapped_strata = self.strata_mapping[strata].unsqueeze(-1).long()
+        mapped_strata_float = self.strata_mapping[strata]
+        # Check for unobserved tasks (mapped to NaN) and warn
+        unobserved_mask = torch.isnan(mapped_strata_float)
+        if unobserved_mask.any():
+            warnings.warn(
+                "Predictions are being made for tasks that were not observed "
+                "during training. These tasks will use an identity transform "
+                "(mean=0, stdv=1).",
+                stacklevel=3,
+            )
+            # Map unobserved tasks to index 0 temporarily for gather operation
+            mapped_strata_float = mapped_strata_float.clone()
+            mapped_strata_float[unobserved_mask] = 0.0
+        mapped_strata = mapped_strata_float.unsqueeze(-1).long()
         # get means and stdvs for each strata
         n_extra_batch_dims = mapped_strata.ndim - 2 - len(self._batch_shape)
         expand_shape = mapped_strata.shape[:n_extra_batch_dims] + self.means.shape
@@ -630,12 +660,22 @@ class StratifiedStandardize(Standardize):
             dim=-2,
             index=mapped_strata,
         )
+        # Apply identity transform (mean=0, stdv=1) for unobserved tasks
+        if unobserved_mask.any():
+            unobserved_mask_expanded = unobserved_mask.unsqueeze(-1)
+            means = means.clone()
+            stdvs = stdvs.clone()
+            means[unobserved_mask_expanded] = 0.0
+            stdvs[unobserved_mask_expanded] = 1.0
         if include_stdvs_sq:
             stdvs_sq = torch.gather(
                 input=self._stdvs_sq.expand(expand_shape),
                 dim=-2,
                 index=mapped_strata,
             )
+            if unobserved_mask.any():
+                stdvs_sq = stdvs_sq.clone()
+                stdvs_sq[unobserved_mask_expanded] = 1.0
         else:
             stdvs_sq = None
         return means, stdvs, stdvs_sq
@@ -657,10 +697,10 @@ class StratifiedStandardize(Standardize):
         r"""Un-standardize outcomes.
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of standardized targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of standardized observation
+            Y: A ``batch_shape x n x m``-dim tensor of standardized targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of standardized observation
                 noises associated with the targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of input parameters.
+            X: A ``batch_shape x n x d``-dim tensor of input parameters.
 
         Returns:
             A two-tuple with the un-standardized outcomes:
@@ -679,12 +719,13 @@ class StratifiedStandardize(Standardize):
 
         Args:
             posterior: A posterior in the standardized space.
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
 
         Returns:
             The un-standardized posterior. If the input posterior is a
-            `GPyTorchPosterior`, return a `GPyTorchPosterior`. Otherwise, return a
-            `TransformedPosterior`.
+            ``GPyTorchPosterior`` or ``GaussianMixturePosterior``, return
+            the same type with analytically rescaled distribution. Otherwise,
+            return a ``TransformedPosterior``.
         """
         if X is None:
             raise ValueError("X is required for StratifiedStandardize.")
@@ -697,6 +738,11 @@ class Log(OutcomeTransform):
     Useful if the targets are modeled using a (multivariate) log-Normal
     distribution. This means that we can use a standard GP model on the
     log-transformed outcomes and un-transform the model posterior of that GP.
+
+    When observation noise is provided, the variance is transformed using the
+    delta method approximation: Var[log(Y)] ≈ Var[Y] / Y^2. This assumes that
+    the observation noise is Gaussian in the log-transformed space, which
+    corresponds to log-normal observation noise in the original space.
     """
 
     def __init__(self, outputs: list[int] | None = None) -> None:
@@ -737,10 +783,10 @@ class Log(OutcomeTransform):
         r"""Log-transform outcomes.
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of observation noises
+            Y: A ``batch_shape x n x m``-dim tensor of training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of observation noises
                 associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:
@@ -760,10 +806,18 @@ class Log(OutcomeTransform):
                 dim=-1,
             )
         if Yvar is not None:
-            # TODO: Delta method, possibly issue warning
-            raise NotImplementedError(
-                "Log does not yet support transforming observation noise"
-            )
+            # Delta method: Var[log(Y)] ≈ Var[Y] / Y^2
+            Yvar_tf = Yvar / Y.clamp(min=1e-8).pow(2)
+            if outputs is not None:
+                Yvar = torch.stack(
+                    [
+                        Yvar_tf[..., i] if i in outputs else Yvar[..., i]
+                        for i in range(Y.size(-1))
+                    ],
+                    dim=-1,
+                )
+            else:
+                Yvar = Yvar_tf
         return Y_tf, Yvar
 
     def untransform(
@@ -772,11 +826,11 @@ class Log(OutcomeTransform):
         r"""Un-transform log-transformed outcomes
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of log-transfomred targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of log- transformed
+            Y: A ``batch_shape x n x m``-dim tensor of log-transformed targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of log- transformed
                 observation noises associated with the training targets
                 (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:
@@ -796,10 +850,24 @@ class Log(OutcomeTransform):
                 dim=-1,
             )
         if Yvar is not None:
-            # TODO: Delta method, possibly issue warning
-            raise NotImplementedError(
-                "Log does not yet support transforming observation noise"
+            # Reverse of delta method: Var[Y] = Var[log(Y)] * Y^2
+            # Since Y = exp(Y_log), this is Var[log(Y)] * exp(2 * Y_log)
+            logger.debug(
+                "Log.untransform: Reverse delta method for observation noise "
+                "is a lossy operation. The untransformed variance is an "
+                "approximation that may not exactly match the original variance."
             )
+            Yvar_utf = Yvar * torch.exp(2.0 * Y)
+            if outputs is not None:
+                Yvar = torch.stack(
+                    [
+                        Yvar_utf[..., i] if i in outputs else Yvar[..., i]
+                        for i in range(Y.size(-1))
+                    ],
+                    dim=-1,
+                )
+            else:
+                Yvar = Yvar_utf
         return Y_utf, Yvar
 
     def untransform_posterior(
@@ -809,7 +877,7 @@ class Log(OutcomeTransform):
 
         Args:
             posterior: A posterior in the log-transformed space.
-            X: A `batch_shape x n x d`-dim tensor of inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:
@@ -874,10 +942,10 @@ class Power(OutcomeTransform):
         r"""Power-transform outcomes.
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of observation noises
+            Y: A ``batch_shape x n x m``-dim tensor of training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of observation noises
                 associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:
@@ -909,11 +977,11 @@ class Power(OutcomeTransform):
         r"""Un-transform power-transformed outcomes
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of power-transfomred targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of power-transformed
+            Y: A ``batch_shape x n x m``-dim tensor of power-transformed targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of power-transformed
                 observation noises associated with the training targets
                 (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:
@@ -946,7 +1014,7 @@ class Power(OutcomeTransform):
 
         Args:
             posterior: A posterior in the power-transformed space.
-            X: A `batch_shape x n x d`-dim tensor of inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:
@@ -1007,10 +1075,10 @@ class Bilog(OutcomeTransform):
         r"""Bilog-transform outcomes.
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of training targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of observation noises
+            Y: A ``batch_shape x n x m``-dim tensor of training targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of observation noises
                 associated with the training targets (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of training inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of training inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:
@@ -1041,11 +1109,11 @@ class Bilog(OutcomeTransform):
         r"""Un-transform bilog-transformed outcomes
 
         Args:
-            Y: A `batch_shape x n x m`-dim tensor of bilog-transfomred targets.
-            Yvar: A `batch_shape x n x m`-dim tensor of bilog-transformed
+            Y: A ``batch_shape x n x m``-dim tensor of bilog-transformed targets.
+            Yvar: A ``batch_shape x n x m``-dim tensor of bilog-transformed
                 observation noises associated with the training targets
                 (if applicable).
-            X: A `batch_shape x n x d`-dim tensor of inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:
@@ -1078,7 +1146,7 @@ class Bilog(OutcomeTransform):
 
         Args:
             posterior: A posterior in the bilog-transformed space.
-            X: A `batch_shape x n x d`-dim tensor of inputs (if applicable).
+            X: A ``batch_shape x n x d``-dim tensor of inputs (if applicable).
                 This argument is not used by this transform.
 
         Returns:

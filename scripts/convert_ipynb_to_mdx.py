@@ -25,6 +25,7 @@ LIB_DIR = SCRIPTS_DIR.parent.resolve()
 WEBSITE_DIR = LIB_DIR.joinpath("website")
 DOCS_DIR = LIB_DIR.joinpath("docs")
 TUTORIALS_DIR = DOCS_DIR.joinpath("tutorials")
+NOTEBOOKS_COMMUNITY_DIR = DOCS_DIR.joinpath("notebooks_community")
 
 ORGANIZATION = "pytorch"
 PROJECT = "botorch"
@@ -45,7 +46,7 @@ priorities = [
 ]
 
 
-def load_nb_metadata() -> dict[str, dict[str, str]]:
+def load_tutorial_metadata() -> list[dict[str, str]]:
     """
     Load the metadata and list of notebooks that are to be converted to MDX.
 
@@ -53,8 +54,8 @@ def load_nb_metadata() -> dict[str, dict[str, str]]:
         None
 
     Returns:
-        Dict[str, Dict[str, str]]: A dictionary of metadata needed to convert notebooks
-            to MDX. Only those notebooks that are listed in the `tutorials.json` file
+        list[dict[str, str]]: A list of metadata needed to convert notebooks
+            to MDX. Only those notebooks that are listed in the ``tutorials.json`` file
             will be included in the Docusaurus MDX output.
     """
     tutorials_json_path = WEBSITE_DIR.joinpath("tutorials.json")
@@ -67,6 +68,25 @@ def load_nb_metadata() -> dict[str, dict[str, str]]:
     return tutorial_configs
 
 
+def load_notebooks_community_metadata() -> list[dict[str, str]]:
+    """
+    Load the metadata and list of community notebooks that are to be converted to MDX.
+
+    Args:
+        None
+
+    Returns:
+        list[dict[str, str]]: A list of metadata needed to convert notebooks
+            to MDX. Only those notebooks that are listed in the
+            ``notebooks_community.json`` file will be included in the
+            Docusaurus MDX output.
+    """
+    json_path = WEBSITE_DIR.joinpath("notebooks_community.json")
+    with json_path.open("r") as f:
+        configs = json.load(f)
+    return configs
+
+
 def load_notebook(path: Path) -> NotebookNode:
     """
     Load the given notebook into memory.
@@ -75,7 +95,7 @@ def load_notebook(path: Path) -> NotebookNode:
         path (Path): Path to the Jupyter notebook.
 
     Returns:
-        NotebookNode: `nbformat` object, which contains all the notebook cells in it.
+        NotebookNode: ``nbformat`` object, which contains all the notebook cells in it.
     """
     with path.open("r") as f:
         nb_str = f.read()
@@ -83,25 +103,27 @@ def load_notebook(path: Path) -> NotebookNode:
     return nb
 
 
-def create_folders(path: Path) -> tuple[str, Path]:
+def create_folders(path: Path, is_community: bool) -> tuple[str, Path]:
     """
-    Create asset folders for the tutorial.
+    Create asset folders for the notebook.
 
     Args:
-        path (Path): Path to the Jupyter notebook.
+        path: Path to the Jupyter notebook.
+        is_community: Whether the notebook is a community notebook (False for tutorial).
 
     Returns:
         Tuple[str, Path]: Returns a tuple with the filename to use for the MDX file
             and the path for the MDX assets folder.
     """
-    tutorial_folder_name = path.stem
-    filename = "".join([token.title() for token in tutorial_folder_name.split("_")])
-    tutorial_folder = TUTORIALS_DIR.joinpath(tutorial_folder_name)
-    assets_folder = tutorial_folder / "assets"
+    folder_name = path.stem
+    filename = "".join([token.title() for token in folder_name.split("_")])
+    base_folder_dir = NOTEBOOKS_COMMUNITY_DIR if is_community else TUTORIALS_DIR
+    folder = base_folder_dir.joinpath(folder_name)
+    assets_folder = folder / "assets"
     img_folder = assets_folder / "img"
     plot_data_folder = assets_folder / "plot_data"
-    if not tutorial_folder.exists():
-        tutorial_folder.mkdir(parents=True, exist_ok=True)
+    if not folder.exists():
+        folder.mkdir(parents=True, exist_ok=True)
     if not img_folder.exists():
         img_folder.mkdir(parents=True, exist_ok=True)
     if not plot_data_folder.exists():
@@ -113,17 +135,17 @@ def create_frontmatter(path: Path, nb_metadata: dict[str, dict[str, str]]) -> st
     """
     Create frontmatter for the resulting MDX file.
 
-    The frontmatter is the data between the `---` lines in an MDX file.
+    The frontmatter is the data between the ``---`` lines in an MDX file.
 
     Args:
         path (Path): Path to the Jupyter notebook.
         nb_metadata (Dict[str, Dict[str, str]]): The metadata associated with the given
-            notebook. Metadata is defined in the `tutorials.json` file.
+            notebook. Metadata is defined in the ``tutorials.json`` file.
 
     Returns:
         str: MDX formatted frontmatter.
     """
-    # Add the frontmatter to the MDX string. This is the part between the `---` lines
+    # Add the frontmatter to the MDX string. This is the part between the ``---`` lines
     # that define the tutorial sidebar_label information.
     frontmatter_delimiter = ["---"]
     frontmatter = [
@@ -206,14 +228,14 @@ def handle_image_attachments(
     attachment name.
 
     The pattern we search for in the Markdown is
-    `![alt_text](attachment:attachment_name title)` with three groups:
+    ``![alt_text](attachment:attachment_name title)`` with three groups:
 
     - group 1 = alt_text (optional)
     - group 2 = attachment_name
     - group 3 = title (optional)
 
     To represent this in MD we replace the attachment reference with the base64 encoded
-    string as `![{alt_text}](data:{mime_type};base64,{img_as_base64})`
+    string as ``![{alt_text}](data:{mime_type};base64,{img_as_base64})``
 
     Args:
         markdown (str): The markdown content containing image attachments.
@@ -255,12 +277,12 @@ def handle_image_paths_found_in_markdown(
     - group 1 = path/to/image.png
     - group 2 = "title"
 
-    We explicitly exclude matching if the path starts with `attachment:` as this
+    We explicitly exclude matching if the path starts with ``attachment:`` as this
     indicates that the image is embedded as a base64 attachment not a file path.
 
     The first group (the path to the image from the original notebook) will be replaced
-    with ``assets/img/{name}`` where the name is `image.png` from the example above. The
-    original image will also be copied to the new location
+    with ``assets/img/{name}`` where the name is ``image.png`` from the example above.
+    The original image will also be copied to the new location
     ``{new_img_dir}/assets/img/{name}``, which can be directly read into the MDX file.
 
     Args:
@@ -282,22 +304,20 @@ def handle_image_paths_found_in_markdown(
     if not searches:
         return markdown
 
-    # Convert the given Markdown to a list so we can delete the old path with the new
-    # standard path.
-    markdown_list = list(markdown)
-    for search in searches:
+    # Process searches in reverse order so that each replacement doesn't affect the
+    # start/end indices for the next replacements
+    for search in reversed(searches):
         # Find the old image path and replace it with the new one.
         old_path, _ = search.groups()
-        start = 0
-        end = 0
-        search = re.search(old_path, markdown)
-        if search is not None:
-            start, end = search.span()
+        # Get the span of the old_path within the full match
+        start, end = search.span(1)
+
         old_path = Path(old_path)
         name = old_path.name.strip()
         new_path = f"assets/img/{name}"
-        del markdown_list[start:end]
-        markdown_list.insert(start, new_path)
+
+        # Replace the old path with the new path in the markdown
+        markdown = markdown[:start] + new_path + markdown[end:]
 
         # Copy the original image to the new location.
         if old_path.exists():
@@ -309,7 +329,7 @@ def handle_image_paths_found_in_markdown(
         new_img_path = str(new_img_dir / name)
         shutil.copy(str(old_img_path), new_img_path)
 
-    return "".join(markdown_list)
+    return markdown
 
 
 def transform_style_attributes(markdown: str) -> str:
@@ -322,9 +342,9 @@ def transform_style_attributes(markdown: str) -> str:
     Returns:
         str: The original Markdown with new React style attributes.
     """
-    # Finds all instances of `style="attr: value; ..."`.
+    # Finds all instances of ``style="attr: value; ..."``.
     token = "style="
-    pattern = re.compile(f"""{token}["'`]([^"]*)["'`]""")
+    pattern = re.compile(f"""{token}["'``]([^"]*)["'``]""")
     found_patterns = re.findall(pattern, markdown)
     if not found_patterns:
         return markdown
@@ -537,7 +557,7 @@ def handle_pandas(
     Handle how to display pandas DataFrames.
 
     There is a scoped style tag in the DataFrame output that uses the class name
-    `dataframe` to style the output. We will use this token to determine if a pandas
+    ``dataframe`` to style the output. We will use this token to determine if a pandas
     DataFrame is being displayed.
 
     Args:
@@ -557,6 +577,8 @@ def handle_pandas(
             # pd.read_html() raises an error if there's no dataframe.
             continue
         df = pd.read_html(io.StringIO(data), flavor="lxml")
+        if len(df) == 0:
+            continue
         # NOTE: The return is a list of dataframes and we only care about the first
         #       one.
         md_df = df[0]
@@ -704,7 +726,7 @@ def aggregate_mdx(
     plot_data_folder: Path,
 ) -> str:
     """
-    Aggregate the `cell_outputs_to_process` into MDX.
+    Aggregate the ``cell_outputs_to_process`` into MDX.
 
     Args:
         cell_outputs_to_process (CELL_OUTPUTS_TO_PROCESS): A dictionary of cell outputs
@@ -772,8 +794,7 @@ def prioritize_dtypes(
         [str(item) for item in items] for items in prioritized_cell_output_dtypes
     ]
     plotly_flags = [
-        any(["plotly" in output for output in outputs])
-        for outputs in cell_output_dtypes
+        any("plotly" in output for output in outputs) for outputs in cell_output_dtypes
     ]
     return prioritized_cell_output_dtypes, plotly_flags
 
@@ -870,9 +891,9 @@ def aggregate_output_types(cell_outputs: list[NotebookNode]) -> CELL_OUTPUTS_TO_
     for i, cell_output in enumerate(cell_outputs):
         prioritized_data_dtype = prioritized_cell_output_dtypes[i][0]
 
-        # If there is no `data` key in the cell_output, then it may be an error that
+        # If there is no ``data`` key in the cell_output, then it may be an error that
         # needs to be handled. Even if it is not an error, the data is stored in a
-        # different key if no `data` key is found.
+        # different key if no ``data`` key is found.
         data = (
             cell_output["data"][prioritized_data_dtype]
             if "data" in cell_output
@@ -959,17 +980,19 @@ def handle_code_cell(cell: NotebookNode, plot_data_folder: Path) -> str:
     return cell_input_mdx + cell_output_mdx
 
 
-def transform_notebook(path: Path, nb_metadata: object) -> str:
+def transform_notebook(path: Path, nb_metadata: object, is_community: bool) -> str:
     """
     Transform a notebook located at the given path into MDX.
 
     Args:
-        path (Path): Path to the Jupyter notebook tutorial.
+        path: Path to the Jupyter notebook tutorial.
+        nb_metadata: Metadata for the notebook to be converted.
+        is_community: Whether the notebook is a community notebook (False for tutorial).
 
     Returns:
         str: MDX formatted string.
     """
-    filename, assets_folder = create_folders(path)
+    _, assets_folder = create_folders(path=path, is_community=is_community)
     img_folder = assets_folder / "img"
     plot_data_folder = assets_folder / "plot_data"
     save_folder = assets_folder.joinpath("..").resolve()
@@ -1007,12 +1030,13 @@ def clean_up_directories() -> None:
     Returns:
         None: Does not return anything.
     """
-    if TUTORIALS_DIR.exists():
-        # We intentionally leave the static `index.mdx` file in place since that is not
-        # autogenerated.
-        for item in os.scandir(TUTORIALS_DIR):
-            if item.is_dir():
-                shutil.rmtree(item.path)
+    for dir_ in [TUTORIALS_DIR, NOTEBOOKS_COMMUNITY_DIR]:
+        if dir_.exists():
+            # We intentionally leave the static ``index.mdx`` file in place since
+            # that is not autogenerated.
+            for item in os.scandir(dir_):
+                if item.is_dir():
+                    shutil.rmtree(item.path)
 
 
 if __name__ == "__main__":
@@ -1026,7 +1050,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    tutorials_metadata = load_nb_metadata()
+    tutorials_metadata = load_tutorial_metadata()
+    notebooks_community_metadata = load_notebooks_community_metadata()
     print("--------------------------------------------")
     print("Converting tutorial notebooks into mdx files")
     print("--------------------------------------------")
@@ -1037,5 +1062,17 @@ if __name__ == "__main__":
             LIB_DIR / "tutorials" / metadata["id"] / (metadata["id"] + ".ipynb")
         ).resolve()
         print(f"{path.stem}")
-        mdx = transform_notebook(path, metadata)
+        mdx = transform_notebook(path=path, nb_metadata=metadata, is_community=False)
+    print("--------------------------------------------")
+    print("Converting community notebooks into mdx files")
+    print("--------------------------------------------")
+    for metadata in notebooks_community_metadata:
+        path = (
+            LIB_DIR
+            / "notebooks_community"
+            / metadata["id"]
+            / (metadata["id"] + ".ipynb")
+        ).resolve()
+        print(f"{path.stem}")
+        mdx = transform_notebook(path=path, nb_metadata=metadata, is_community=True)
     print("")

@@ -12,14 +12,12 @@ Paper: "Variational Bayesian Last Layers" by Harrison et al., ICLR 2024
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
-
 import torch
 import torch.nn as nn
-
 from botorch.logging import logger
 from torch import Tensor
 
@@ -297,9 +295,14 @@ class DenseNormalPrec(torch.distributions.MultivariateNormal):
 
     @property
     def trace_covariance(self):
-        return (
-            (torch.inverse(self.tril) ** 2).sum(-1).sum(-1)
-        )  # compute as frob norm squared
+        # Compute ||L^{-1}||_F^2 via triangular solve instead of full inverse.
+        Eye = torch.eye(
+            self.tril.shape[-1],
+            device=self.tril.device,
+            dtype=self.tril.dtype,
+        )
+        L_inv = torch.linalg.solve_triangular(self.tril, Eye, upper=False)
+        return (L_inv**2).sum(-1).sum(-1)
 
     def covariance_weighted_inner_prod(self, b, reduce_dim=True):
         assert b.shape[-1] == 1
@@ -361,6 +364,7 @@ class Regression(nn.Module):
         out_features,
         regularization_weight,
         parameterization="dense",
+        mean_initialization=None,
         prior_scale=1.0,
         wishart_scale=1e-2,
         cov_rank=None,
@@ -381,10 +385,18 @@ class Regression(nn.Module):
         parameterization : str
             Parameterization of covariance matrix.
             Currently supports {'dense', 'diagonal', 'lowrank', 'dense_precision'}
+        mean_initialization : str or None
+            Initialization method for the mean of the weights.
+            Supports {'kaiming', None}. If None, weights are initialized from
+            a standard normal distribution. Defaults to None.
         prior_scale : float
             Scale of prior covariance matrix
         wishart_scale : float
             Scale of Wishart prior on noise covariance
+        cov_rank : int or None
+            For 'lowrank' parameterization, the rank of the covariance matrix.
+        clamp_noise_init : bool
+            Whether to clamp the noise initialization to be positive.
         dof : float
             Degrees of freedom of Wishart prior on noise covariance
         """
@@ -412,9 +424,26 @@ class Regression(nn.Module):
 
         # last layer distribution
         self.W_dist = get_parameterization(parameterization)
-        self.W_mean = nn.Parameter(
-            torch.randn(out_features, in_features, dtype=self.dtype)
-        )
+
+        if mean_initialization is None:
+            self.W_mean = nn.Parameter(
+                torch.randn(out_features, in_features, dtype=self.dtype)
+            )
+        elif mean_initialization == "kaiming":
+            self.W_mean = nn.Parameter(
+                torch.randn(out_features, in_features, dtype=self.dtype)
+                * np.sqrt(2.0 / in_features)
+            )
+        elif isinstance(mean_initialization, str):
+            raise ValueError(
+                f"Unknown initialization method: {mean_initialization!r}. "
+                f"Supported methods: 'kaiming'"
+            )
+        else:
+            raise TypeError(
+                f"mean_initialization must be a string or None, "
+                f"got {type(mean_initialization).__name__}"
+            )
 
         if parameterization == "diagonal":
             self.W_logdiag = nn.Parameter(

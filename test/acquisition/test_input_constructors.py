@@ -6,15 +6,15 @@
 
 """
 When adding tests for a new input constructor, please add a new case to
-`TestInstantiationFromInputConstructor.setUp`.
+``TestInstantiationFromInputConstructor.setUp``.
 """
 
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Callable
 from functools import reduce
-
 from random import randint
 from unittest import mock
 from unittest.mock import MagicMock
@@ -24,6 +24,7 @@ from botorch.acquisition.acquisition import AcquisitionFunction
 from botorch.acquisition.active_learning import qNegIntegratedPosteriorVariance
 from botorch.acquisition.analytic import (
     ExpectedImprovement,
+    LogConstrainedExpectedImprovement,
     LogExpectedImprovement,
     LogNoisyExpectedImprovement,
     LogProbabilityOfFeasibility,
@@ -39,6 +40,7 @@ from botorch.acquisition.bayesian_active_learning import (
 from botorch.acquisition.fixed_feature import FixedFeatureAcquisitionFunction
 from botorch.acquisition.input_constructors import (
     _field_is_shared,
+    _get_ref_point,
     _register_acqf_input_constructor,
     acqf_input_constructor,
     ACQF_INPUT_CONSTRUCTOR_REGISTRY,
@@ -53,7 +55,6 @@ from botorch.acquisition.knowledge_gradient import (
     qKnowledgeGradient,
     qMultiFidelityKnowledgeGradient,
 )
-
 from botorch.acquisition.logei import (
     qLogExpectedImprovement,
     qLogNoisyExpectedImprovement,
@@ -82,7 +83,6 @@ from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
     qHypervolumeKnowledgeGradient,
     qMultiFidelityHypervolumeKnowledgeGradient,
 )
-
 from botorch.acquisition.multi_objective.logei import (
     qLogExpectedHypervolumeImprovement,
     qLogNoisyExpectedHypervolumeImprovement,
@@ -110,9 +110,10 @@ from botorch.acquisition.utils import (
     expand_trace_observations,
     project_to_target_fidelity,
 )
-from botorch.exceptions.errors import UnsupportedError
-from botorch.models import MultiTaskGP, SaasFullyBayesianSingleTaskGP, SingleTaskGP
+from botorch.exceptions.errors import BotorchError, UnsupportedError
+from botorch.models import MultiTaskGP, SingleTaskGP
 from botorch.models.deterministic import FixedSingleSampleModel
+from botorch.models.fully_bayesian import SaasFullyBayesianSingleTaskGP
 from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.optim.optimize import optimize_acqf
 from botorch.sampling.normal import IIDNormalSampler, SobolQMCNormalSampler
@@ -475,6 +476,72 @@ class TestAnalyticAcquisitionFunctionInputConstructors(InputConstructorBaseTestC
                 with self.assertRaisesRegex(ValueError, "Field `X` must be shared"):
                     c(model=mock_model, training_data=self.multiX_multiY)
 
+    def test_construct_inputs_LogCEI(self) -> None:
+        c = get_acqf_input_constructor(LogConstrainedExpectedImprovement)
+        mock_model = self.mock_model
+        constraints_tuple = [torch.tensor([[0.0, 1.0]]), torch.tensor([[2.0]])]
+        constraints = {1: (None, 2.0)}
+        best_f_expected = self.blockX_blockY[0].Y.squeeze().max()
+        objective_index = 0
+        # test that best_f is inferred from training data
+        # test constraint tuple
+        kwargs = c(
+            model=mock_model,
+            objective_index=objective_index,
+            training_data=self.blockX_blockY,
+            constraints_tuple=constraints_tuple,
+            maximize=False,
+        )
+        self.assertEqual(
+            set(kwargs.keys()),
+            {"model", "best_f", "objective_index", "constraints", "maximize"},
+        )
+        self.assertIs(kwargs["model"], mock_model)
+        self.assertEqual(kwargs["objective_index"], objective_index)
+        self.assertEqual(kwargs["constraints"], constraints)
+        self.assertEqual(kwargs["best_f"], best_f_expected)
+        self.assertFalse(kwargs["maximize"])
+        # test that best_f overrides default from training data
+        # test that negative constraints work
+        constraints_tuple = [torch.tensor([[0.0, -1.0]]), torch.tensor([[-2.0]])]
+        constraints = {1: (2.0, None)}
+        kwargs = c(
+            model=mock_model,
+            objective_index=objective_index,
+            training_data=self.blockX_blockY,
+            best_f=0.1,
+            constraints_tuple=constraints_tuple,
+        )
+        self.assertIs(kwargs["model"], mock_model)
+        self.assertEqual(kwargs["objective_index"], objective_index)
+        self.assertEqual(kwargs["constraints"], constraints)
+        self.assertEqual(kwargs["best_f"], 0.1)
+        self.assertTrue(kwargs["maximize"])
+        # test that constraints on multiple outcomes raises an exception
+        with self.assertRaisesRegex(
+            BotorchError,
+            "LogConstrainedExpectedImprovement only support constraints on single"
+            " outcomes.",
+        ):
+            c(
+                model=mock_model,
+                objective_index=objective_index,
+                training_data=self.blockX_blockY,
+                constraints_tuple=[torch.tensor([[1.0, 1.0]]), torch.tensor([[2.0]])],
+            )
+        # test that if objective_index coincides with constraints raises a value error
+        with self.assertRaisesRegex(
+            ValueError,
+            "Output corresponding to objective should not be a constraint.",
+        ):
+            kwargs = c(
+                model=mock_model,
+                objective_index=1,
+                training_data=self.blockX_blockY,
+                constraints_tuple=[torch.tensor([[0.0, -1.0]]), torch.tensor([[-2.0]])],
+            )
+            LogConstrainedExpectedImprovement(**kwargs)
+
     def test_construct_inputs_eubo(self) -> None:
         """test input constructor for analytical EUBO and MC qEUBO"""
 
@@ -636,11 +703,25 @@ class TestMCAcquisitionFunctionInputConstructors(InputConstructorBaseTestCase):
     def test_construct_inputs_LogPOF(self) -> None:
         c = get_acqf_input_constructor(LogProbabilityOfFeasibility)
         mock_model = self.mock_model
-        constraints = {1: [None, 0]}
-        kwargs = c(model=mock_model, constraints=constraints)
+        constraints_tuple = [torch.tensor([[0.0, 1.0]]), torch.tensor([[2.0]])]
+        constraints = {1: (None, 2.0)}
+        kwargs = c(model=mock_model, constraints_tuple=constraints_tuple)
         self.assertEqual(set(kwargs.keys()), {"model", "constraints"})
         self.assertIs(kwargs["model"], mock_model)
         self.assertEqual(kwargs["constraints"], constraints)
+        constraints_tuple = [torch.tensor([[0.0, -1.0]]), torch.tensor([[-2.0]])]
+        kwargs = c(model=mock_model, constraints_tuple=constraints_tuple)
+        constraints = {1: (2.0, None)}
+        self.assertEqual(kwargs["constraints"], constraints)
+        # test that constraints on multiple outcomes raises an exception
+        with self.assertRaisesRegex(
+            BotorchError,
+            "LogProbabilityOfFeasibility only support constraints on single outcomes.",
+        ):
+            c(
+                model=mock_model,
+                constraints_tuple=[torch.tensor([[1.0, 1.0]]), torch.tensor([[2.0]])],
+            )
 
     def test_construct_inputs_qEI(self) -> None:
         c = get_acqf_input_constructor(qExpectedImprovement)
@@ -676,7 +757,7 @@ class TestMCAcquisitionFunctionInputConstructors(InputConstructorBaseTestCase):
         multi_Y = torch.cat([d.Y for d in self.blockX_multiY.values()], dim=-1)
         best_f_expected = objective(multi_Y).max()
         self.assertEqual(kwargs["best_f"], best_f_expected)
-        # Check explicitly specifying `best_f`.
+        # Check explicitly specifying ``best_f``.
         best_f_expected = best_f_expected - 1  # Random value.
         kwargs = c(
             model=mock_model,
@@ -833,7 +914,7 @@ class TestMCAcquisitionFunctionInputConstructors(InputConstructorBaseTestCase):
         self.assertIs(acqf.model, mock_model)
         self.assertIs(acqf.objective, objective)
 
-        # Check explicitly specifying `best_f`.
+        # Check explicitly specifying ``best_f``.
         best_f_expected = best_f_expected - 1  # Random value.
         outcome_constraints = (torch.tensor([[0.0, 1.0]]), torch.tensor([[0.5]]))
         constraints = get_outcome_constraint_transforms(
@@ -1231,7 +1312,7 @@ class TestMultiObjectiveAcquisitionFunctionInputConstructors(
         self.assertTrue(kwargs["cache_pending"])
         self.assertEqual(kwargs["max_iep"], 0)
         self.assertTrue(kwargs["incremental_nehvi"])
-        self.assertTrue(kwargs["cache_root"])
+        self.assertIsNone(kwargs["cache_root"])
 
         if acqf_class == qLogNoisyExpectedHypervolumeImprovement:
             self.assertEqual(kwargs["tau_relu"], TAU_RELU)
@@ -1334,6 +1415,141 @@ class TestMultiObjectiveAcquisitionFunctionInputConstructors(
             objective_thresholds=objective_thresholds,
         )
         self.assertEqual(kwargs["alpha"], 0.0)
+
+    def test_get_ref_point(self) -> None:
+        objective_thresholds = torch.rand(2)
+        ref_point = torch.rand(2)
+
+        with self.subTest("ref_point provided"):
+            result = _get_ref_point(ref_point=ref_point)
+            self.assertTrue(torch.equal(result, ref_point))
+
+        with self.subTest("objective_thresholds with deprecation warning"):
+            with warnings.catch_warnings(record=True) as ws:
+                warnings.simplefilter("always")
+                result = _get_ref_point(
+                    objective_thresholds=objective_thresholds,
+                )
+                self.assertTrue(torch.equal(result, objective_thresholds))
+                self.assertEqual(len(ws), 1)
+                self.assertTrue(issubclass(ws[0].category, DeprecationWarning))
+                self.assertIn("ref_point", str(ws[0].message))
+
+        with self.subTest("both raises ValueError"):
+            with self.assertRaisesRegex(ValueError, "Cannot specify both"):
+                _get_ref_point(
+                    objective_thresholds=objective_thresholds,
+                    ref_point=ref_point,
+                )
+
+        with self.subTest("neither raises ValueError"):
+            with self.assertRaisesRegex(
+                ValueError, "Either `ref_point` or `objective_thresholds`"
+            ):
+                _get_ref_point()
+
+        with self.subTest("objective_thresholds with objective"):
+            weights = torch.rand(2)
+            obj = WeightedMCMultiOutputObjective(weights=weights)
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                result = _get_ref_point(
+                    objective_thresholds=objective_thresholds,
+                    objective=obj,
+                )
+                self.assertTrue(torch.equal(result, obj(objective_thresholds)))
+
+        with self.subTest("ref_point with objective (no transform)"):
+            weights = torch.rand(2)
+            obj = WeightedMCMultiOutputObjective(weights=weights)
+            result = _get_ref_point(
+                objective=obj,
+                ref_point=ref_point,
+            )
+            # ref_point is used directly, no objective transform
+            self.assertTrue(torch.equal(result, ref_point))
+
+    def test_construct_inputs_ref_point(self) -> None:
+        """Test ref_point parameter across MOO input constructors."""
+        ref_point = torch.rand(2)
+        objective_thresholds = torch.rand(2)
+
+        with self.subTest("EHVI with ref_point"):
+            Y_pmean = torch.rand(3, 2)
+            mock_model = mock.Mock()
+            c = get_acqf_input_constructor(ExpectedHypervolumeImprovement)
+            kwargs = c(
+                model=mock_model,
+                training_data=self.blockX_blockY,
+                ref_point=ref_point,
+                Y_pmean=Y_pmean,
+            )
+            self.assertTrue(torch.equal(kwargs["ref_point"], ref_point))
+
+        with self.subTest("EHVI with both raises ValueError"):
+            c = get_acqf_input_constructor(ExpectedHypervolumeImprovement)
+            with self.assertRaisesRegex(ValueError, "Cannot specify both"):
+                c(
+                    model=mock_model,
+                    training_data=self.blockX_blockY,
+                    objective_thresholds=objective_thresholds,
+                    ref_point=ref_point,
+                    Y_pmean=Y_pmean,
+                )
+
+        with self.subTest("qEHVI with ref_point"):
+            mm = SingleTaskGP(torch.rand(1, 2), torch.rand(1, 2))
+            c = get_acqf_input_constructor(qExpectedHypervolumeImprovement)
+            kwargs = c(
+                model=mm,
+                training_data=self.blockX_blockY,
+                ref_point=ref_point,
+            )
+            self.assertTrue(torch.equal(kwargs["ref_point"], ref_point))
+
+        with self.subTest("qNEHVI with ref_point"):
+            mm = SingleTaskGP(torch.rand(1, 2), torch.rand(1, 2))
+            c = get_acqf_input_constructor(qNoisyExpectedHypervolumeImprovement)
+            kwargs = c(
+                model=mm,
+                training_data=self.blockX_blockY,
+                ref_point=ref_point,
+            )
+            self.assertTrue(torch.equal(kwargs["ref_point"], ref_point))
+
+        with self.subTest("qLogNEHVI with ref_point"):
+            mm = SingleTaskGP(torch.rand(1, 2), torch.rand(1, 2))
+            c = get_acqf_input_constructor(qLogNoisyExpectedHypervolumeImprovement)
+            kwargs = c(
+                model=mm,
+                training_data=self.blockX_blockY,
+                ref_point=ref_point,
+            )
+            self.assertTrue(torch.equal(kwargs["ref_point"], ref_point))
+
+        with self.subTest("qNEHVI with neither raises ValueError"):
+            mm = SingleTaskGP(torch.rand(1, 2), torch.rand(1, 2))
+            c = get_acqf_input_constructor(qNoisyExpectedHypervolumeImprovement)
+            with self.assertRaisesRegex(ValueError, "Either"):
+                c(
+                    model=mm,
+                    training_data=self.blockX_blockY,
+                )
+
+        with self.subTest("objective_thresholds triggers deprecation warning"):
+            mm = SingleTaskGP(torch.rand(1, 2), torch.rand(1, 2))
+            c = get_acqf_input_constructor(qNoisyExpectedHypervolumeImprovement)
+            with warnings.catch_warnings(record=True) as ws:
+                warnings.simplefilter("always")
+                kwargs = c(
+                    model=mm,
+                    training_data=self.blockX_blockY,
+                    objective_thresholds=objective_thresholds,
+                )
+                dep_warnings = [
+                    w for w in ws if issubclass(w.category, DeprecationWarning)
+                ]
+                self.assertTrue(len(dep_warnings) >= 1)
 
     def test_construct_inputs_qLogNParEGO(self) -> None:
         # Focusing on the unique attributes since the rest are same as qLogNEI.
@@ -1464,7 +1680,7 @@ class TestKGandESAcquisitionFunctionInputConstructors(InputConstructorBaseTestCa
                     )
                 )
 
-                # check that `optimize_acqf` is called with the desired value function
+                # check that ``optimize_acqf`` is called with the desired value function
                 if acqf_cls == qMultiFidelityHypervolumeKnowledgeGradient:
                     self.assertIsInstance(
                         mock_optimize_acqf.call_args.kwargs["acq_function"],
@@ -1547,6 +1763,24 @@ class TestKGandESAcquisitionFunctionInputConstructors(InputConstructorBaseTestCa
                     )
                     self.assertTrue(torch.equal(kwargs["ref_point"], expected_obj_t))
 
+            with self.subTest("ref_point direct"):
+                direct_ref_point = torch.rand(2)
+                with mock.patch(
+                    target="botorch.acquisition.input_constructors.optimize_acqf",
+                    return_value=(None, current_value),
+                ):
+                    kwargs = get_kwargs(
+                        model=model,
+                        training_data=self.blockX_blockY,
+                        ref_point=direct_ref_point,
+                        objective=objective,
+                        bounds=self.bounds,
+                        num_fantasies=33,
+                        num_pareto=11,
+                        **input_constructor_extra_kwargs,
+                    )
+                self.assertTrue(torch.equal(kwargs["ref_point"], direct_ref_point))
+
     def test_construct_inputs_mes(self) -> None:
         func = get_acqf_input_constructor(qMaxValueEntropy)
         n, d, m = 5, 2, 1
@@ -1601,7 +1835,11 @@ class TestKGandESAcquisitionFunctionInputConstructors(InputConstructorBaseTestCa
             self.assertTrue(
                 torch.equal(
                     kwargs["project"](X),
-                    project_to_target_fidelity(X, target_fidelities=target_fidelities),
+                    project_to_target_fidelity(
+                        X,
+                        target_fidelities=target_fidelities,
+                        d=X.shape[-1],
+                    ),
                 )
             )
 
@@ -1781,6 +2019,9 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
     def setUp(self, suppress_input_warnings: bool = True) -> None:
         super().setUp(suppress_input_warnings=suppress_input_warnings)
         # {key: (list of acquisition functions, arguments they accept)}
+        constraints_tuple_dict = {
+            "constraints_tuple": (torch.tensor([[0.0, 1.0]]), torch.tensor([[2.0]])),
+        }
         self.cases = {
             "PosteriorMean-type": (
                 [
@@ -1789,7 +2030,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                     qUpperConfidenceBound,
                     qLowerConfidenceBound,
                 ],
-                {"model": self.mock_model},
+                {"model": self.mock_model, **constraints_tuple_dict},
             ),
         }
         st_soo_model = SingleTaskGP(
@@ -1811,12 +2052,31 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 qLogNoisyExpectedImprovement,
                 qProbabilityOfImprovement,
             ],
-            {"model": st_soo_model, "training_data": self.blockX_blockY},
+            {
+                "model": st_soo_model,
+                "training_data": self.blockX_blockY,
+                **constraints_tuple_dict,
+            },
         )
 
         self.cases["LogPoF"] = (
             [LogProbabilityOfFeasibility],
-            {"model": st_soo_model, "constraints": {0: [-5, 5]}},
+            {
+                "model": st_soo_model,
+                "constraints": {0: [-5, 5]},
+                **constraints_tuple_dict,
+            },
+        )
+
+        self.cases["LogCEI"] = (
+            [LogConstrainedExpectedImprovement],
+            {
+                "model": st_soo_model,
+                "objective_index": 0,
+                "training_data": self.blockX_blockY,
+                "constraints": {0: [-5, 5]},
+                **constraints_tuple_dict,
+            },
         )
 
         def constraint(X: Tensor) -> Tensor:
@@ -1824,7 +2084,11 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
 
         self.cases["qLogPoF"] = (
             [qLogProbabilityOfFeasibility],
-            {"model": st_soo_model, "constraints": [constraint]},
+            {
+                "model": st_soo_model,
+                "constraints": [constraint],
+                **constraints_tuple_dict,
+            },
         )
 
         bounds = torch.ones((1, 2))
@@ -1835,6 +2099,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "model": kg_model,
                 "training_data": self.blockX_blockY,
                 "bounds": bounds,
+                **constraints_tuple_dict,
             },
         )
         self.cases["MF look-ahead"] = (
@@ -1845,6 +2110,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "bounds": bounds,
                 "target_fidelities": {0: 0.987},
                 "num_fantasies": 30,
+                **constraints_tuple_dict,
             },
         )
         bounds = torch.ones((2, 2))
@@ -1857,6 +2123,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "bounds": bounds,
                 "target_fidelities": {0: 0.987},
                 "num_fantasies": 30,
+                **constraints_tuple_dict,
             },
         )
 
@@ -1877,6 +2144,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "model": st_moo_model,
                 "objective_thresholds": objective_thresholds,
                 "training_data": self.blockX_blockY,
+                **constraints_tuple_dict,
             },
         )
 
@@ -1893,6 +2161,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "training_data": self.blockX_blockY,
                 "bounds": bounds,
                 "objective_thresholds": objective_thresholds,
+                **constraints_tuple_dict,
             },
         )
         self.cases["MF HV Look-ahead"] = (
@@ -1904,6 +2173,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "target_fidelities": {0: 0.987},
                 "num_fantasies": 30,
                 "objective_thresholds": objective_thresholds,
+                **constraints_tuple_dict,
             },
         )
 
@@ -1913,13 +2183,14 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
 
         self.cases["EUBO"] = (
             [AnalyticExpectedUtilityOfBestOption, qExpectedUtilityOfBestOption],
-            {"model": st_moo_model, "pref_model": pref_model},
+            {"model": st_moo_model, "pref_model": pref_model, **constraints_tuple_dict},
         )
         self.cases["qJES"] = (
             [qJointEntropySearch],
             {
                 "model": SingleTaskGP(self.blockX_blockY[0].X, self.blockX_blockY[0].Y),
                 "bounds": self.bounds,
+                **constraints_tuple_dict,
             },
         )
         self.cases["qSimpleRegret"] = (
@@ -1928,6 +2199,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "model": SingleTaskGP(self.blockX_blockY[0].X, self.blockX_blockY[0].Y),
                 "training_data": self.blockX_blockY,
                 "objective": LinearMCObjective(torch.rand(2)),
+                **constraints_tuple_dict,
             },
         )
         self.cases["BayesianActiveLearning"] = (
@@ -1936,6 +2208,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "model": SaasFullyBayesianSingleTaskGP(
                     self.blockX_blockY[0].X, self.blockX_blockY[0].Y
                 ),
+                **constraints_tuple_dict,
             },
         )
         self.cases["ActiveLearning"] = (
@@ -1944,6 +2217,7 @@ class TestInstantiationFromInputConstructor(InputConstructorBaseTestCase):
                 "model": SingleTaskGP(self.blockX_blockY[0].X, self.blockX_blockY[0].Y),
                 "training_data": self.blockX_blockY,
                 "bounds": self.bounds,
+                **constraints_tuple_dict,
             },
         )
 

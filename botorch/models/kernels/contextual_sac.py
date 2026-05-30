@@ -19,13 +19,13 @@ from torch.nn import ModuleDict  # pyre-ignore
 class SACKernel(Kernel):
     r"""The structural additive contextual(SAC) kernel.
 
-    The kernel is used for contextual BO without oberseving context breakdowns.
+    The kernel is used for contextual BO without observing context breakdowns.
     There are d parameters and M contexts. In total, the dimension of parameter space
     is d*M and input x can be written as
     x=[x_11, ..., x_1d, x_21, ..., x_2d, ...,  x_M1, ..., x_Md].
 
     The kernel uses the parameter decomposition and assumes an additive structure
-    across contexts. Each context compponent is assumed to be independent.
+    across contexts. Each context component is assumed to be independent.
 
     .. math::
        \begin{equation*}
@@ -35,8 +35,8 @@ class SACKernel(Kernel):
 
     where
     * :math: M is the number of partitions of parameter space. Each partition contains
-    same number of parameters d. Each kernel `k_i` acts only on d parameters of ith
-    partition i.e. `\mathbf{x}_(i)`. Each kernel `k_i` is a scaled RBF kernel
+    same number of parameters d. Each kernel ``k_i`` acts only on d parameters of ith
+    partition i.e. ``\mathbf{x}_(i)``. Each kernel ``k_i`` is a scaled RBF kernel
     with same lengthscales but different outputscales.
     """
 

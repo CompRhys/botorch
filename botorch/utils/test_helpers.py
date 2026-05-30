@@ -25,6 +25,7 @@ from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.models.transforms.outcome import Standardize
 from botorch.models.utils import add_output_dim
 from botorch.models.utils.assorted import fantasize
+from botorch.posteriors.posterior import Posterior
 from botorch.posteriors.torch import TorchPosterior
 from botorch.utils.datasets import MultiTaskDataset, SupervisedDataset
 from gpytorch.distributions.multivariate_normal import MultivariateNormal
@@ -39,24 +40,13 @@ from torch import Size, Tensor
 from torch.nn.functional import pad
 
 
-def _get_mcmc_samples(num_samples: int, dim: int, infer_noise: bool, **tkwargs):
-    mcmc_samples = {
-        "lengthscale": 1 + torch.rand(num_samples, 1, dim, **tkwargs),
-        "outputscale": 1 + torch.rand(num_samples, **tkwargs),
-        "mean": torch.randn(num_samples, **tkwargs),
-    }
-    if infer_noise:
-        mcmc_samples["noise"] = torch.rand(num_samples, 1, **tkwargs)
-    mcmc_samples["lengthscale"] = mcmc_samples["lengthscale"]
-
-    return mcmc_samples
-
-
 def get_model(
     train_X: Tensor,
     train_Y: Tensor,
     standardize_model: bool = False,
     use_model_list: bool = False,
+    *,
+    train_Yvar: Tensor | None = None,
 ) -> SingleTaskGP | ModelListGP:
     num_objectives = train_Y.shape[-1]
 
@@ -74,6 +64,9 @@ def get_model(
                 SingleTaskGP(
                     train_X=train_X,
                     train_Y=train_Y[:, i : i + 1],
+                    train_Yvar=(
+                        train_Yvar[:, i : i + 1] if train_Yvar is not None else None
+                    ),
                     outcome_transform=outcome_transform,
                 )
                 for i in range(num_objectives)
@@ -83,6 +76,7 @@ def get_model(
         model = SingleTaskGP(
             train_X=train_X,
             train_Y=train_Y,
+            train_Yvar=train_Yvar,
             outcome_transform=outcome_transform,
         )
 
@@ -93,8 +87,8 @@ def get_fully_bayesian_model(
     train_X: Tensor,
     train_Y: Tensor,
     num_models: int,
-    standardize_model: bool,
-    infer_noise: bool,
+    standardize_model: bool = False,
+    infer_noise: bool = True,
     **tkwargs: Any,
 ) -> SaasFullyBayesianSingleTaskGP:
     num_objectives = train_Y.shape[-1]
@@ -122,6 +116,20 @@ def get_fully_bayesian_model(
     return model
 
 
+def _get_mcmc_samples(
+    num_samples: int, dim: int, infer_noise: bool, **tkwargs
+) -> dict[str, Tensor]:
+    mcmc_samples = {
+        "lengthscale": 1 + torch.rand(num_samples, 1, dim, **tkwargs),
+        "outputscale": 1 + torch.rand(num_samples, **tkwargs),
+        "mean": torch.randn(num_samples, **tkwargs),
+    }
+    if infer_noise:
+        mcmc_samples["noise"] = torch.rand(num_samples, 1, **tkwargs)
+
+    return mcmc_samples
+
+
 def get_fully_bayesian_model_list(
     train_X: Tensor,
     train_Y: Tensor,
@@ -145,7 +153,7 @@ def get_sample_moments(samples: Tensor, sample_shape: Size) -> tuple[Tensor, Ten
     """Computes the mean and covariance of a set of samples.
 
     Args:
-        samples: A tensor of shape `sample_shape x batch_shape x q`.
+        samples: A tensor of shape ``sample_shape x batch_shape x q``.
         sample_shape: The sample_shape input used while generating the samples using
             the pathwise sampling API.
     """
@@ -180,11 +188,12 @@ def gen_multi_task_dataset(
     """Constructs a multi-task dataset with two tasks, each with 10 data points.
 
     Args:
-        yvar: The noise level to use for `train_Yvar`. If None, uses `train_Yvar=None`.
+        yvar: The noise level to use for ``train_Yvar``. If None, uses
+            ``train_Yvar=None``.
         task_values: The values of the task features. If None, uses [0, 1].
         skip_task_features_in_datasets: If True, the task features are not included in
             Xs of the datasets used to construct the datasets. This is useful for
-            testing `MultiTaskDataset`.
+            testing ``MultiTaskDataset``.
     """
     if task_values is not None and skip_task_features_in_datasets:
         raise UnsupportedError(  # pragma: no cover
@@ -251,9 +260,9 @@ def get_pvar_expected(
 
     Args:
         posterior: The posterior to compute the variance of. Must be a
-            `TorchPosterior` object.
-        model: The model that generated the posterior. If `m > 1`, this must be
-            a `BatchedMultiOutputGPyTorchModel`.
+            ``TorchPosterior`` object.
+        model: The model that generated the posterior. If ``m > 1``, this must be
+            a ``BatchedMultiOutputGPyTorchModel``.
         X: The test inputs.
         m: The number of outputs.
 
@@ -300,11 +309,11 @@ def get_pvar_expected(
 class DummyNonScalarizingPosteriorTransform(PosteriorTransform):
     scalarize = False
 
-    def evaluate(self, Y):
-        pass  # pragma: no cover
+    def evaluate(self, Y: Tensor, X: Tensor | None = None) -> Tensor:
+        return Y  # pragma: no cover
 
-    def forward(self, posterior):
-        pass  # pragma: no cover
+    def forward(self, posterior: Posterior, X: Tensor | None = None) -> Posterior:
+        return posterior  # pragma: no cover
 
 
 class SimpleGPyTorchModel(GPyTorchModel, ExactGP, FantasizeMixin):

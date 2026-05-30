@@ -51,7 +51,7 @@ class TestMock(BotorchTestCase):
                     initial_conditions=torch.tensor([[0.0]]),
                     acquisition_function=SinAcqusitionFunction(),
                 )
-            # When not using `mock_optimize`, the value is 1.0. With it, the value is
+            # When not using ``mock_optimize``, the value is 1.0. With it, the value is
             # around 0.9875
             self.assertLess(value.item(), 0.99)
 
@@ -77,10 +77,13 @@ class TestMock(BotorchTestCase):
             self.assertLess(value.item(), 0.99)
 
         with self.subTest("gen_batch_initial_conditions"):
-            with mock_optimize_context_manager(), patch(
-                "botorch.optim.initializers.initialize_q_batch",
-                wraps=initialize_q_batch,
-            ) as mock_init_q_batch:
+            with (
+                mock_optimize_context_manager(),
+                patch(
+                    "botorch.optim.initializers.initialize_q_batch",
+                    wraps=initialize_q_batch,
+                ) as mock_init_q_batch,
+            ):
                 cand, value = optimize_acqf(
                     acq_function=SinAcqusitionFunction(),
                     bounds=torch.tensor([[-2.0], [2.0]]),
@@ -91,28 +94,32 @@ class TestMock(BotorchTestCase):
             self.assertEqual(mock_init_q_batch.call_args[1]["n"], 2)
 
     def test_mock_optimize_mixed_alternating(self) -> None:
-        with patch(
-            "botorch.optim.optimize_mixed.discrete_step",
-            wraps=discrete_step,
-        ) as mock_discrete, patch(
-            "botorch.optim.optimize_mixed.continuous_step",
-            wraps=continuous_step,
-        ) as mock_continuous, patch(
-            "botorch.optim.optimize_mixed.get_nearest_neighbors",
-            wraps=get_nearest_neighbors,
-        ) as mock_neighbors:
+        with (
+            patch(
+                "botorch.optim.optimize_mixed.discrete_step",
+                wraps=discrete_step,
+            ) as mock_discrete,
+            patch(
+                "botorch.optim.optimize_mixed.continuous_step",
+                wraps=continuous_step,
+            ) as mock_continuous,
+            patch(
+                "botorch.optim.optimize_mixed.get_nearest_neighbors",
+                wraps=get_nearest_neighbors,
+            ) as mock_neighbors,
+        ):
             optimize_acqf_mixed_alternating(
                 acq_function=SinAcqusitionFunction(),
-                bounds=torch.tensor([[-2.0, 0.0], [2.0, 20.0]]),
-                discrete_dims=[1],
+                bounds=torch.tensor([[-2.0, 0.0], [2.0, 5.0]]),
+                discrete_dims={1: list(range(6))},
                 num_restarts=1,
             )
-        # These should be called at most `MAX_ITER_ALTER` times for each random
+        # These should be called at most ``MAX_ITER_ALTER`` times for each random
         # restart, which is mocked to 1.
         mock_discrete.assert_called_once()
         mock_continuous.assert_called_once()
-        # This should be called at most `MAX_ITER_DISCRETE` in each call of
-        # `mock_discrete`, which should total to 1.
+        # This should be called at most ``MAX_ITER_DISCRETE`` in each call of
+        # ``mock_discrete``, which should total to 1.
         mock_neighbors.assert_called_once()
 
     @mock_optimize
@@ -123,14 +130,17 @@ class TestMock(BotorchTestCase):
         )
         acqf = qKnowledgeGradient(model=model, num_fantasies=64)
         # this is called within gen_one_shot_kg_initial_conditions
-        with patch(
-            "botorch.optim.initializers.gen_batch_initial_conditions",
-            wraps=gen_batch_initial_conditions,
-        ) as mock_gen_batch_ics, warnings.catch_warnings():
+        with (
+            patch(
+                "botorch.optim.initializers.gen_batch_initial_conditions",
+                wraps=gen_batch_initial_conditions,
+            ) as mock_gen_batch_ics,
+            warnings.catch_warnings(),
+        ):
             warnings.simplefilter("ignore", category=BadInitialCandidatesWarning)
             cand, value = optimize_acqf(
                 acq_function=acqf,
-                bounds=torch.tensor([[-2.0], [2.0]]),
+                bounds=torch.tensor([[-2.0], [2.0]], dtype=torch.double),
                 q=1,
                 num_restarts=32,
                 raw_samples=16,

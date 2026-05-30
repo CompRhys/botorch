@@ -11,12 +11,13 @@ Utilities for speeding up optimization in tests.
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager, ExitStack
 from functools import wraps
-from typing import Any, Callable
+from typing import Any
 from unittest import mock
 
+from botorch.optim.batched_lbfgs_b import fmin_l_bfgs_b_batched
 from botorch.optim.initializers import (
     gen_batch_initial_conditions,
     gen_one_shot_kg_initial_conditions,
@@ -45,6 +46,11 @@ def mock_optimize_context_manager(
         kwargs["options"]["maxiter"] = 2
         return minimize_with_timeout(*args, **kwargs)
 
+    def two_iteration_fast_minimize(*args: Any, **kwargs: Any) -> OptimizeResult:
+        # Using two iterations here to allow SLSQP to adapt to constraints.
+        kwargs["maxiter"] = 2
+        return fmin_l_bfgs_b_batched(*args, **kwargs)
+
     def minimal_gen_ics(*args: Any, **kwargs: Any) -> Tensor:
         kwargs["num_restarts"] = 2
         kwargs["raw_samples"] = 4
@@ -58,9 +64,9 @@ def mock_optimize_context_manager(
         return gen_one_shot_kg_initial_conditions(*args, **kwargs)
 
     with ExitStack() as es:
-        # Note this `minimize_with_timeout` is defined in optim.utils.timeout;
+        # Note this ``minimize_with_timeout`` is defined in optim.utils.timeout;
         # this mock only has an effect when calling a function used in
-        # `botorch.generation.gen`, such as `gen_candidates_scipy`.
+        # ``botorch.generation.gen``, such as ``gen_candidates_scipy``.
         mock_generation = es.enter_context(
             mock.patch(
                 "botorch.generation.gen.minimize_with_timeout",
@@ -68,8 +74,26 @@ def mock_optimize_context_manager(
             )
         )
 
-        # Similarly, works when using calling a function defined in
-        # `optim.core`, such as `scipy_minimize` and `torch_minimize`.
+        mock_generation_fast = es.enter_context(
+            mock.patch(
+                "botorch.generation.gen.fmin_l_bfgs_b_batched",
+                wraps=two_iteration_fast_minimize,
+            )
+        )
+
+        # Works when calling ``fit_gpytorch_mll_scipy`` for batched multi-output
+        # models (e.g., ``EnsembleMapSaasSingleTaskGP``) which use independent
+        # fitting via ``fmin_l_bfgs_b_batched``. The function is imported locally
+        # inside ``_fit_independent_models``, so we mock at the definition location.
+        mock_fit_independent = es.enter_context(
+            mock.patch(
+                "botorch.optim.batched_lbfgs_b.fmin_l_bfgs_b_batched",
+                wraps=two_iteration_fast_minimize,
+            )
+        )
+
+        # Similarly, works when calling a function defined in
+        # ``optim.core``, such as ``scipy_minimize`` and ``torch_minimize``.
         mock_fit = es.enter_context(
             mock.patch(
                 "botorch.optim.core.minimize_with_timeout",
@@ -77,8 +101,8 @@ def mock_optimize_context_manager(
             )
         )
 
-        # Works when calling a function in `optim.optimize` such as
-        # `optimize_acqf`
+        # Works when calling a function in ``optim.optimize`` such as
+        # ``optimize_acqf``
         mock_gen_ics = es.enter_context(
             mock.patch(
                 "botorch.optim.optimize.gen_batch_initial_conditions",
@@ -86,8 +110,8 @@ def mock_optimize_context_manager(
             )
         )
 
-        # Works when calling a function in `optim.optimize` such as
-        # `optimize_acqf`
+        # Works when calling a function in ``optim.optimize`` such as
+        # ``optimize_acqf``
         mock_gen_os_ics = es.enter_context(
             mock.patch(
                 "botorch.optim.optimize.gen_one_shot_kg_initial_conditions",
@@ -95,7 +119,7 @@ def mock_optimize_context_manager(
             )
         )
 
-        # Reduce default number of iterations in `optimize_acqf_mixed_alternating`.
+        # Reduce default number of iterations in ``optimize_acqf_mixed_alternating``.
         for name in [
             "MAX_ITER_ALTER",
             "MAX_ITER_DISCRETE",
@@ -109,7 +133,9 @@ def mock_optimize_context_manager(
         mock_.call_count < 1
         for mock_ in [
             mock_generation,
+            mock_generation_fast,
             mock_fit,
+            mock_fit_independent,
             mock_gen_ics,
             mock_gen_os_ics,
         ]
@@ -121,7 +147,7 @@ def mock_optimize_context_manager(
 
 
 def mock_optimize(f: Callable) -> Callable:
-    """Wraps `f` in `mock_optimize_context_manager` for use as a decorator."""
+    """Wraps ``f`` in ``mock_optimize_context_manager`` for use as a decorator."""
 
     @wraps(f)
     # pyre-fixme[3]: Return type must be annotated.

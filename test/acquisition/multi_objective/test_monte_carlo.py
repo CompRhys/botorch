@@ -41,7 +41,6 @@ from botorch.models import (
 )
 from botorch.models.gp_regression import SingleTaskGP
 from botorch.models.transforms.input import InputPerturbation
-from botorch.models.transforms.outcome import Standardize
 from botorch.posteriors.posterior_list import PosteriorList
 from botorch.posteriors.transformed import TransformedPosterior
 from botorch.sampling.list_sampler import ListSampler
@@ -63,7 +62,7 @@ from torch import Tensor
 def evaluate(acqf: MultiObjectiveMCAcquisitionFunction, X: Tensor) -> Tensor:
     """On a high level, this test file abstracts away the acqf_class and executes
     the respective tests for the LogEI, fat, and vanilla versions of the acquisition
-    functions separately, by converting all values to the same space via `evaluate`.
+    functions separately, by converting all values to the same space via ``evaluate``.
     """
     return (
         acqf(X).exp()
@@ -120,7 +119,7 @@ class TestMultiObjectiveMCAcquisitionFunction(BotorchTestCase):
             [[4.0, 5.0], [5.0, 5.0], [8.5, 3.5], [8.5, 3.0], [9.0, 1.0]], **tkwargs
         )
         partitioning = NondominatedPartitioning(ref_point=t_ref_point)
-        # the event shape is `b x q x m` = 1 x 1 x 2
+        # the event shape is ``b x q x m`` = 1 x 1 x 2
         samples = torch.zeros(1, 1, 2, **tkwargs)
         mm = MockModel(MockPosterior(samples=samples))
 
@@ -571,7 +570,7 @@ class TestMultiObjectiveMCAcquisitionFunction(BotorchTestCase):
         partitioning.update(Y=pareto_Y)
 
         # test q=1
-        # the event shape is `b x q x m` = 1 x 1 x 2
+        # the event shape is ``b x q x m`` = 1 x 1 x 2
         samples = torch.tensor([[[6.5, 4.5]]], **tkwargs)
         mm = MockModel(MockPosterior(samples=samples))
         sampler = IIDNormalSampler(sample_shape=torch.Size([1]))
@@ -746,7 +745,7 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
         ref_point = self.ref_point[:m]
         Y = self.Y_raw[:, :m].to(**tkwargs)
         X_baseline = torch.rand(Y.shape[0], 1, **tkwargs)
-        # the event shape is `b x q + r x m` = 1 x 1 x 2
+        # the event shape is ``b x q + r x m`` = 1 x 1 x 2
         baseline_samples = Y
         samples = torch.cat(
             [baseline_samples.unsqueeze(0), torch.zeros(1, 1, m, **tkwargs)],
@@ -1014,6 +1013,9 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
             # test _initial_hvs
             if not incremental_nehvi:
                 self.assertTrue(hasattr(acqf, "_initial_hvs"))
+                # test that _initial_hvs has the correct shape
+                self.assertEqual(acqf._initial_hvs.shape, acqf._batch_sample_shape)
+                # test that _initial_hvs contains the correct hypervolume values
                 self.assertTrue(torch.equal(acqf._initial_hvs, initial_hv.view(-1)))
             # test forward
             X_test = torch.rand(1, 1, dtype=dtype, device=self.device)
@@ -1055,7 +1057,7 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
             acqf.set_X_pending(X_pending)
             if not incremental_nehvi:
                 self.assertAllClose(expected_val, acqf._prev_nehvi)
-            self.assertIsNone(acqf.X_pending)
+            self.assertTrue(torch.all(acqf.X_pending == X_pending))
             # check that X_baseline has been updated
             self.assertTrue(torch.equal(acqf.X_baseline[:-1], acqf._X_baseline))
             self.assertTrue(torch.equal(acqf.X_baseline[-1:], X_pending))
@@ -1113,7 +1115,7 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
         )
         mm._posterior._samples = mm._posterior._samples.squeeze(0)
         acqf.set_X_pending(X_pending2)
-        self.assertIsNone(acqf.X_pending)
+        self.assertTrue(torch.all(acqf.X_pending == X_pending2))
         # check that X_baseline has been updated
         self.assertTrue(torch.equal(acqf.X_baseline[:-2], acqf._X_baseline))
         self.assertTrue(torch.equal(acqf.X_baseline[-2:], X_pending2))
@@ -1130,7 +1132,9 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
             acqf.set_X_pending(
                 torch.cat([X_pending2, X_pending2], dim=0).requires_grad_(True)
             )
-        self.assertIsNone(acqf.X_pending)
+        self.assertTrue(
+            torch.all(acqf.X_pending == torch.cat([X_pending2, X_pending2], dim=0))
+        )
         self.assertEqual(sum(issubclass(w.category, BotorchWarning) for w in ws), 1)
 
         # test max iep
@@ -1162,10 +1166,10 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
                 new_Y2,
             ]
         )
-        # check that after second pending point is added, X_pending is set to None
-        # and the pending points are included in the box decompositions
+        # check that after second pending point is added, X_pending still includes
+        # pending points, and the pending points are included in the box decompositions
         acqf.set_X_pending(X_pending2)
-        self.assertIsNone(acqf.X_pending)
+        self.assertTrue(torch.all(acqf.X_pending == X_pending2))
         acqf_pareto_Y = acqf.partitioning.pareto_Y[0]
         self.assertTrue(torch.equal(acqf_pareto_Y[:-2], expected_pareto_Y))
         self.assertTrue(torch.equal(acqf_pareto_Y[-2:], expected_new_Y2))
@@ -1179,7 +1183,7 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
         Y = self.Y_raw[:, :m].to(**tkwargs)
         pareto_Y = self.pareto_Y_raw[:, :m].to(**tkwargs)
         X_baseline = torch.rand(Y.shape[0], 1, **tkwargs)
-        # the event shape is `b x q + r x m` = 1 x 1 x 2
+        # the event shape is ``b x q + r x m`` = 1 x 1 x 2
         baseline_samples = Y
         mm = MockModel(MockPosterior(samples=baseline_samples))
 
@@ -1295,7 +1299,7 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
     def test_constrained_q_log_noisy_expected_hypervolume_improvement(self) -> None:
         for dtype, fat in product(
             (torch.float, torch.double),
-            (True, False),
+            (False, True),
         ):
             with self.subTest(dtype=dtype, fat=fat):
                 self._test_constrained_q_noisy_expected_hypervolume_improvement(
@@ -1315,7 +1319,7 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
         baseline_samples = pareto_Y
 
         # test q=1
-        # the event shape is `b x q x m` = 1 x 1 x 2
+        # the event shape is ``b x q x m`` = 1 x 1 x 2
         samples = torch.cat(
             [
                 baseline_samples.unsqueeze(0),
@@ -1718,9 +1722,7 @@ class TestQNoisyExpectedHypervolumeImprovement(BotorchTestCase):
             with self.subTest(acqf_class.__name__):
                 train_x = torch.rand(3, 2, dtype=torch.float64)
                 train_y = torch.randn(3, 2, dtype=torch.float64)
-                model = SingleTaskGP(
-                    train_x, train_y, outcome_transform=Standardize(m=2)
-                )
+                model = SingleTaskGP(train_x, train_y)
                 with catch_warnings():
                     simplefilter("ignore", category=NumericsWarning)
                     acqf = acqf_class(

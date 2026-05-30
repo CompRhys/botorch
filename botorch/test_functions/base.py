@@ -11,10 +11,11 @@ Base class for test functions for optimization benchmarks.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Iterable, Iterator, Protocol
+from collections.abc import Iterable, Iterator
+from typing import Any, Protocol
 
 import torch
-from botorch.exceptions.errors import InputDataError
+from botorch.exceptions.errors import InputDataError, UnsupportedError
 from pyre_extensions import none_throws
 from torch import Tensor
 from torch.nn import Module
@@ -31,7 +32,7 @@ def validate_parameter_indices(
 
     Args:
         dim: Number of search space dimensions.
-        bounds: A `2 x d`-dim tensor of lower and upper bounds.
+        bounds: A ``2 x d``-dim tensor of lower and upper bounds.
         continuous_inds: List of unique integers corresponding to continuous parameters.
         discrete_inds: List of unique integers corresponding to discrete parameters.
         categorical_inds: List of unique integers corresponding to categorical
@@ -84,13 +85,13 @@ def validate_inputs(
 ) -> None:
     r"""Check that the inputs are valid.
 
-    This method checks that the input tensor `X` has the correct shape, is within
+    This method checks that the input tensor ``X`` has the correct shape, is within
     the bounds, and that the discrete and categorical parameters are integer-valued.
 
     Args:
-        X: A `(batch_shape) x n x d`-dim tensor of point(s) at which to evaluate
+        X: A ``(batch_shape) x n x d``-dim tensor of point(s) at which to evaluate
         dim: Number of search space dimensions.
-        bounds: A `2 x d`-dim tensor of lower and upper bounds.
+        bounds: A ``2 x d``-dim tensor of lower and upper bounds.
         discrete_inds: List of unique integers corresponding to discrete parameters.
         categorical_inds: List of unique integers corresponding to categorical
             parameters.
@@ -125,6 +126,8 @@ class BaseTestProblem(Module, ABC):
     continuous_inds: list[int] = []  # Float-valued range parameters (bounds inclusive)
     discrete_inds: list[int] = []  # Ordered integer parameters (bounds inclusive)
     categorical_inds: list[int] = []  # Unordered integer parameters (bounds inclusive)
+    # Whether the problem is a minimization problem by default, with ``negate=False``.
+    _is_minimization_by_default: bool = True
 
     def __init__(
         self,
@@ -165,12 +168,12 @@ class BaseTestProblem(Module, ABC):
         r"""Evaluate the function on a set of points.
 
         Args:
-            X: A `(batch_shape) x d`-dim tensor of point(s) at which to evaluate
+            X: A ``(batch_shape) x d``-dim tensor of point(s) at which to evaluate
                 the function.
-            noise: If `True`, add observation noise as specified by `noise_std`.
+            noise: If ``True``, add observation noise as specified by ``noise_std``.
 
         Returns:
-            A `batch_shape`-dim tensor ouf function evaluations.
+            A ``batch_shape``-dim tensor of function evaluations.
         """
         f = self.evaluate_true(X=X)
         if noise and self.noise_std is not None:
@@ -185,11 +188,11 @@ class BaseTestProblem(Module, ABC):
         Evaluate the function (w/o observation noise) on a set of points.
 
         Args:
-            X: A `(batch_shape) x d`-dim tensor of point(s) at which to
+            X: A ``(batch_shape) x d``-dim tensor of point(s) at which to
                 evaluate.
 
         Returns:
-            A `batch_shape`-dim tensor.
+            A ``batch_shape``-dim tensor.
         """
         validate_inputs(
             X=X,
@@ -205,20 +208,31 @@ class BaseTestProblem(Module, ABC):
         r"""Evaluate the function (w/o observation noise) on a set of points.
 
         Args:
-            X: A `(batch_shape) x d`-dim tensor of point(s) at which to
+            X: A ``(batch_shape) x d``-dim tensor of point(s) at which to
                 evaluate.
 
         Returns:
-            A `batch_shape`-dim tensor.
+            A ``batch_shape``-dim tensor.
         """
         pass  # pragma: no cover
+
+    @property
+    def is_minimization_problem(self) -> bool:
+        r"""Whether the problem is a minimization problem, after accounting
+        for the ``negate`` option.
+        """
+        return (
+            self._is_minimization_by_default
+            if not self.negate
+            else not self._is_minimization_by_default
+        )
 
 
 class ConstrainedBaseTestProblem(BaseTestProblem, ABC):
     r"""Base class for test functions with constraints.
 
     In addition to one or more objectives, a problem may have a number of outcome
-    constraints of the form `c_i(x) >= 0` for `i=1, ..., n_c`.
+    constraints of the form ``c_i(x) >= 0`` for ``i=1, ..., n_c``.
 
     This base class provides common functionality for such problems.
     """
@@ -226,22 +240,23 @@ class ConstrainedBaseTestProblem(BaseTestProblem, ABC):
     num_constraints: int
     _check_grad_at_opt: bool = False
     constraint_noise_std: None | float | list[float] = None
+    _worst_feasible_value: float | None = None
 
     def evaluate_slack(self, X: Tensor, noise: bool = True) -> Tensor:
         r"""Evaluate the constraint slack on a set of points.
 
-        Constraints `i` is assumed to be feasible at `x` if the associated slack
-        `c_i(x)` is positive. Zero slack means that the constraint is active. Negative
+        Constraints ``i`` is assumed to be feasible at ``x`` if the associated slack
+        ``c_i(x)`` is positive. Zero slack means that the constraint is active. Negative
         slack means that the constraint is violated.
 
         Args:
-            X: A `batch_shape x d`-dim tensor of point(s) at which to evaluate the
-                constraint slacks: `c_1(X), ...., c_{n_c}(X)`.
-            noise: If `True`, add observation noise to the slack as specified by
-                `noise_std`.
+            X: A ``batch_shape x d``-dim tensor of point(s) at which to evaluate the
+                constraint slacks: ``c_1(X), ...., c_{n_c}(X)``.
+            noise: If ``True``, add observation noise to the slack as specified by
+                ``noise_std``.
 
         Returns:
-            A `batch_shape x n_c`-dim tensor of constraint slack (where positive slack
+            A ``batch_shape x n_c``-dim tensor of constraint slack (where positive slack
                 corresponds to the constraint being feasible).
         """
         cons = self.evaluate_slack_true(X=X)
@@ -256,12 +271,12 @@ class ConstrainedBaseTestProblem(BaseTestProblem, ABC):
         r"""Evaluate whether the constraints are feasible on a set of points.
 
         Args:
-            X: A `batch_shape x d`-dim tensor of point(s) at which to evaluate the
+            X: A ``batch_shape x d``-dim tensor of point(s) at which to evaluate the
                 constraints.
-            noise: If `True`, add observation noise as specified by `noise_std`.
+            noise: If ``True``, add observation noise as specified by ``noise_std``.
 
         Returns:
-            A `batch_shape`-dim boolean tensor that is `True` iff all constraint
+            A ``batch_shape``-dim boolean tensor that is ``True`` iff all constraint
                 slacks (potentially including observation noise) are positive.
         """
         return (self.evaluate_slack(X=X, noise=noise) >= 0.0).all(dim=-1)
@@ -270,11 +285,11 @@ class ConstrainedBaseTestProblem(BaseTestProblem, ABC):
         r"""Evaluate the constraint slack (w/o observation noise) on a set of points.
 
         Args:
-            X: A `batch_shape x d`-dim tensor of point(s) at which to evaluate the
-                constraint slacks: `c_1(X), ...., c_{n_c}(X)`.
+            X: A ``batch_shape x d``-dim tensor of point(s) at which to evaluate the
+                constraint slacks: ``c_1(X), ...., c_{n_c}(X)``.
 
         Returns:
-            A `batch_shape x n_c`-dim tensor of constraint slack (where positive slack
+            A ``batch_shape x n_c``-dim tensor of constraint slack (where positive slack
                 corresponds to the constraint being feasible).
         """
         validate_inputs(
@@ -291,14 +306,34 @@ class ConstrainedBaseTestProblem(BaseTestProblem, ABC):
         r"""Evaluate the constraint slack (w/o observation noise) on a set of points.
 
         Args:
-            X: A `batch_shape x d`-dim tensor of point(s) at which to evaluate the
-                constraint slacks: `c_1(X), ...., c_{n_c}(X)`.
+            X: A ``batch_shape x d``-dim tensor of point(s) at which to evaluate the
+                constraint slacks: ``c_1(X), ...., c_{n_c}(X)``.
 
         Returns:
-            A `batch_shape x n_c`-dim tensor of constraint slack (where positive slack
-                corresponds
+            A ``batch_shape x n_c``-dim tensor of constraint slack (where positive slack
+                corresponds to the constraint being feasible).
         """
         pass  # pragma: no cover
+
+    @property
+    def worst_feasible_value(self) -> float:
+        r"""The worst feasible value of the objective function. This is useful when
+        evaluating the performance of different optimization methods as this value
+        can be assigned to all infeasible trials. This has the desirable property that
+        any feasible trial has better performance than an infeasible trial.
+        """
+        if isinstance(self, MultiObjectiveTestProblem):
+            return 0.0  # Can return 0.0 for MOO since this is the smallest possible HV
+        elif self._worst_feasible_value is not None:
+            return (
+                -self._worst_feasible_value
+                if self.negate
+                else self._worst_feasible_value
+            )
+        raise NotImplementedError(
+            f"Problem {self.__class__.__name__} does not specify the "
+            "worst feasible value."
+        )
 
 
 class MultiObjectiveTestProblem(BaseTestProblem, ABC):
@@ -348,8 +383,15 @@ class MultiObjectiveTestProblem(BaseTestProblem, ABC):
             )
 
     def gen_pareto_front(self, n: int) -> Tensor:
-        r"""Generate `n` pareto optimal points."""
+        r"""Generate ``n`` pareto optimal points."""
         raise NotImplementedError
+
+    @property
+    def is_minimization_problem(self) -> bool:
+        raise UnsupportedError(
+            "`is_minimization_problem` is not a valid property for "
+            "multi-objective problems. "
+        )
 
 
 class SeedingMixin(ABC):
@@ -389,21 +431,22 @@ def constant_outlier_generator(
     problem: Any, X: Tensor, bounds: Any, constant: float
 ) -> Tensor:
     """
-    Generates outliers that are all the same constant. To be used in conjunction with
-    `partial` to fix the constant value and conform to the `OutlierGenerator` protocol.
+    Generates outliers that are all the same constant. To be used in conjunction
+    with ``partial`` to fix the constant value and conform to the
+    ``OutlierGenerator`` protocol.
 
     Example:
         >>> generator = partial(constant_outlier_generator, constant=1.0)
 
     Args:
         problem: Not used.
-        X: The `batch_shape x n x d`-dim inputs. Also determines the number, dtype,
+        X: The ``batch_shape x n x d``-dim inputs. Also determines the number, dtype,
             and device of the returned tensor.
         bounds: Not used.
         constant: The constant value of the outliers.
 
     Returns:
-        Tensor of shape `batch_shape x n` (1d if unbatched).
+        Tensor of shape ``batch_shape x n`` (1d if unbatched).
     """
     return torch.full(X.shape[:-1], constant, dtype=X.dtype, device=X.device)
 
@@ -424,15 +467,15 @@ class CorruptedTestProblem(BaseTestProblem, SeedingMixin):
         Args:
             base_test_problem: The base function to be corrupted.
             outlier_generator: A function that generates outliers. It will be called
-                with arguments `f`, `X` and `bounds`, where `f` is the
-                `base_test_problem`, `X` is the
-                argument passed to the `forward` method, and `bounds`
+                with arguments ``f``, ``X`` and ``bounds``, where ``f`` is the
+                ``base_test_problem``, ``X`` is the
+                argument passed to the ``forward`` method, and ``bounds``
                 are as here, and it returns the values of outliers.
             outlier_fraction: The fraction of outliers.
             bounds: The bounds of the function.
             seeds: The seeds to use for the outlier generator. If seeds are provided,
                 the problem will iterate through the list of seeds, changing the seed
-                with a call to `next(seeds)` with every `forward` call. If a list is
+                with a call to ``next(seeds)`` with every ``forward`` call. If a list is
                 provided, it will first be converted to an iterator.
         """
         self.dim: int = base_test_problem.dim
@@ -460,11 +503,11 @@ class CorruptedTestProblem(BaseTestProblem, SeedingMixin):
         Generate data at X and corrupt it, if noise is True.
 
         Args:
-            X: The `batch_shape x n x d`-dim inputs.
+            X: The ``batch_shape x n x d``-dim inputs.
             noise: Whether to corrupt the data.
 
         Returns:
-            A `batch_shape x n`-dim tensor.
+            A ``batch_shape x n``-dim tensor.
         """
         Y = super().forward(X, noise=noise)
         if noise:

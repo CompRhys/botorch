@@ -5,7 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import copy
+from unittest.mock import patch
 
+import numpy as np
 import torch
 from botorch.utils.testing import BotorchTestCase
 from botorch_community.models.blls import AbstractBLLModel
@@ -81,6 +83,69 @@ class TestVBLLModel(BotorchTestCase):
                 device=self.device,
                 parameterization="lowrank",  # lowrank requires cov_rank
             )
+
+    def test_mean_initialization(self):
+        """Test different mean_initialization options."""
+        d, num_hidden, num_outputs, num_layers = 2, 3, 1, 4
+
+        torch.manual_seed(0)
+        model = VBLLModel(
+            in_features=d,
+            hidden_features=num_hidden,
+            num_layers=num_layers,
+            out_features=num_outputs,
+            mean_initialization=None,
+        )
+
+        # fix seeds to see if mean init is the same
+        torch.manual_seed(0)
+        model2 = VBLLModel(
+            in_features=d,
+            hidden_features=num_hidden,
+            num_layers=num_layers,
+            out_features=num_outputs,
+        )
+
+        self.assertTrue(
+            torch.allclose(model.head.W_mean, model2.head.W_mean, atol=1e-6),
+            "mean_initialization=None should be equivalent to default initialization.",
+        )
+
+        # Test kaiming initialization, check of np.sqrt is called
+        with patch("numpy.sqrt", wraps=np.sqrt) as mock_sqrt:
+            model = VBLLModel(
+                in_features=d,
+                hidden_features=num_hidden,
+                num_layers=num_layers,
+                out_features=num_outputs,
+                mean_initialization="kaiming",
+            )
+
+            # Verify that np.sqrt was called with the correct argument
+            mock_sqrt.assert_called_once_with(2.0 / num_hidden)
+
+        # Test invalid string initialization
+        with self.assertRaises(ValueError) as cm:
+            model = VBLLModel(
+                in_features=d,
+                hidden_features=num_hidden,
+                num_layers=num_layers,
+                out_features=num_outputs,
+                mean_initialization="invalid",
+            )
+        self.assertIn("Unknown initialization method", str(cm.exception))
+        self.assertIn("kaiming", str(cm.exception))
+
+        # Test invalid type (not string or None)
+        with self.assertRaises(TypeError) as cm:
+            model = VBLLModel(
+                in_features=d,
+                hidden_features=num_hidden,
+                num_layers=num_layers,
+                out_features=num_outputs,
+                mean_initialization=["kaiming"],
+            )
+        self.assertIn("must be a string or None", str(cm.exception))
 
     def test_backbone_initialization(self) -> None:
         d, num_hidden = 4, 3
@@ -353,18 +418,28 @@ class TestVBLLModel(BotorchTestCase):
         model = VBLLModel(
             in_features=d, hidden_features=4, out_features=1, num_layers=1
         )
-        X, y = _reg_data_singletask(d)
+        X_train, y_train = _reg_data_singletask(d)
         optim_settings = _get_fast_training_settings()
+        model.fit(X_train, y_train, optimization_settings=optim_settings)
 
-        model.fit(X, y, optimization_settings=optim_settings)
+        valid_inputs = [
+            torch.rand(3, d, dtype=torch.float64),  # (3, d)
+            torch.rand(1, 3, d, dtype=torch.float64),  # (1, 3, d)
+            torch.rand(2, 3, d, dtype=torch.float64),  # (2, 3, d)
+            torch.rand(1, d, dtype=torch.float64),  # (1, d)
+        ]
 
-        for batch_shape in (torch.Size([2]), torch.Size()):
-            X = torch.rand(batch_shape + torch.Size([3, d]), dtype=torch.float64)
-            expected_shape = batch_shape + torch.Size([3, 1])
+        for X_test in valid_inputs:
+            if X_test.ndim == 1:
+                expected_shape = torch.Size([1, 1])  # (1 sample, 1 output)
+            elif X_test.ndim == 2:
+                expected_shape = torch.Size([X_test.shape[0], 1])
+            else:
+                batch_shape = X_test.shape[:-2]
+                expected_shape = batch_shape + torch.Size([X_test.shape[-2], 1])
 
-            post = model.posterior(X)
+            post = model.posterior(X_test)
 
-            # check that the posterior is an instance of BLLPosterior
             self.assertIsInstance(
                 post,
                 BLLPosterior,
@@ -379,15 +454,14 @@ class TestVBLLModel(BotorchTestCase):
                 f"but got {post.mean.shape}.",
             )
 
-            # variance prediction
             self.assertEqual(
                 post.variance.shape,
                 expected_shape,
                 f"Expected variance predictions to have shape {expected_shape},"
-                f"but got {post.mean.shape}.",
+                f" but got {post.variance.shape}.",
             )
 
-        # test invalid shape
+        # validate that posterior fails when x.dim > 3
         X = torch.rand(torch.Size([2, 5]) + torch.Size([3, d]), dtype=torch.float64)
 
         with self.assertRaises(ValueError):

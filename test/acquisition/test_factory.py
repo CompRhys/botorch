@@ -19,6 +19,7 @@ from botorch.acquisition.objective import (
     MCAcquisitionObjective,
     ScalarizedPosteriorTransform,
 )
+from botorch.acquisition.thompson_sampling import PathwiseThompsonSampling
 from botorch.acquisition.utils import compute_best_feasible_objective
 from botorch.utils.multi_objective.box_decompositions.non_dominated import (
     FastNondominatedPartitioning,
@@ -308,7 +309,7 @@ class TestGetAcquisitionFunction(BotorchTestCase):
         self.assertEqual(sampler.sample_shape, torch.Size([self.mc_samples]))
         self.assertEqual(sampler.seed, 1)
         self.assertEqual(kwargs["marginalize_dim"], 0)
-        self.assertEqual(kwargs["cache_root"], True)
+        self.assertIsNone(kwargs["cache_root"])
         # test with cache_root = False
         acqf = get_acquisition_function(
             acquisition_function_name=acqf_name,
@@ -358,7 +359,7 @@ class TestGetAcquisitionFunction(BotorchTestCase):
             X_pending=self.X_pending,
             prune_baseline=True,
             marginalize_dim=0,
-            cache_root=True,
+            cache_root=None,
             constraints=constraints,
             eta=eta,
         )
@@ -639,7 +640,7 @@ class TestGetAcquisitionFunction(BotorchTestCase):
             alpha=0.0,
             X_pending=self.X_pending,
             marginalize_dim=None,
-            cache_root=True,
+            cache_root=None,
         )
         args, kwargs = mock_acqf.call_args
         self.assertEqual(args, ())
@@ -731,3 +732,18 @@ class TestGetAcquisitionFunction(BotorchTestCase):
             X_pending=self.X_pending,
             eta=eta,
         )
+
+    def test_GetPTS(self):
+        acqf = get_acquisition_function(
+            acquisition_function_name="pTS",
+            model=self.model,
+            objective=self.objective,
+            posterior_transform=None,
+            X_observed=self.X_observed,
+            X_pending=self.X_pending,
+            mc_samples=self.mc_samples,
+            seed=self.seed,
+        )
+        assert isinstance(acqf, PathwiseThompsonSampling)
+        assert acqf.model is self.model
+        assert acqf.objective is self.objective

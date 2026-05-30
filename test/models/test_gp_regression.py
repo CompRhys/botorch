@@ -161,13 +161,23 @@ class TestGPRegressionBase(BotorchTestCase):
                 X = torch.rand(*input_batch_shape, 3, 1, **tkwargs)
 
                 if input_batch_shape == [3] and len(batch_shape) > 0:
-                    msg = (
-                        "Shape mismatch: objects cannot be broadcast to a single shape"
-                        if m == 1
-                        else "The trailing batch dimensions of X must match "
-                        "the trailing batch dimensions of the training inputs."
-                    )
-                    with self.assertRaisesRegex(RuntimeError, msg):
+                    if m == 1:
+                        # Combine both possible messages into a regex pattern
+                        bdcast_msg_1 = "Shape mismatch: objects cannot be broadcast to "
+                        "a single shape"
+                        bdcast_msg_2 = "Attempting to broadcast a dimension of length "
+                        f"{input_batch_shape[0]} at -1! "
+                        "Mismatching argument at index 1 had "
+                        f"torch.Size([{input_batch_shape[0]}]); "
+                        "but expected shape should be broadcastable to "
+                        f"[{batch_shape[0]}]"
+                        msg_pattern = r"({}|{})".format(bdcast_msg_1, bdcast_msg_2)
+                    else:
+                        msg_pattern = (
+                            "The trailing batch dimensions of X must match "
+                            "the trailing batch dimensions of the training inputs."
+                        )
+                    with self.assertRaisesRegex(RuntimeError, msg_pattern):
                         model.posterior(X, observation_noise=True)
                     continue
                 else:
@@ -419,7 +429,7 @@ class TestGPRegressionBase(BotorchTestCase):
             self.assertTrue(Y.equal(data_dict["train_Y"]))
 
     def test_set_transformed_inputs(self):
-        # This intended to catch https://github.com/pytorch/botorch/issues/1078.
+        # This intended to catch https://github.com/meta-pytorch/botorch/issues/1078.
         # More general testing of _set_transformed_inputs is done under ModelListGP.
         X = torch.rand(5, 2)
         Y = X**2
@@ -434,24 +444,6 @@ class TestGPRegressionBase(BotorchTestCase):
 
 class TestSingleTaskGP(TestGPRegressionBase):
     model_class = SingleTaskGP
-
-    def test_construct_inputs_task_feature_deprecated(self) -> None:
-        model, model_kwargs = self._get_model_and_data(
-            batch_shape=torch.Size([]),
-            m=1,
-            device=self.device,
-            dtype=torch.double,
-        )
-        X = model_kwargs["train_X"]
-        Y = model_kwargs["train_Y"]
-        training_data = SupervisedDataset(
-            X,
-            Y,
-            feature_names=[f"x{i}" for i in range(X.shape[-1])],
-            outcome_names=["y"],
-        )
-        with self.assertWarnsRegex(DeprecationWarning, "`task_feature` is deprecated"):
-            model.construct_inputs(training_data, task_feature=0)
 
 
 class TestSingleTaskGPFixedNoise(TestSingleTaskGP):

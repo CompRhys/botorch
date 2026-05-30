@@ -18,8 +18,8 @@ from time import monotonic
 from typing import Any
 
 import numpy.typing as npt
-
 from botorch.optim.closures import NdarrayOptimizationClosure
+from botorch.optim.stopping import StoppingCriterion
 from botorch.optim.utils.numpy_utils import get_bounds_as_ndarray
 from botorch.optim.utils.timeout import minimize_with_timeout
 from numpy import asarray, float64 as np_float64
@@ -47,7 +47,7 @@ class OptimizationStatus(int, Enum):
     STOPPED = auto()  # stopped due to user provided criterion
 
 
-@dataclass
+@dataclass(slots=True)
 class OptimizationResult:
     step: int
     fval: float | int
@@ -76,10 +76,11 @@ def scipy_minimize(
             NdarrayOptimizationClosure instance.
         parameters: A dictionary of tensors to be optimized.
         bounds: A dictionary mapping parameter names to lower and upper bounds.
-        callback: A callable taking `parameters` and an OptimizationResult as arguments.
+        callback: A callable taking ``parameters`` and an OptimizationResult as
+            arguments.
         x0: An optional initialization vector passed to scipy.optimize.minimize.
-        method: Solver type, passed along to scipy.minimize.
-        options: Dictionary of solver options, passed along to scipy.minimize.
+        method: Solver type, passed along to scipy.optimize.minimize.
+        options: Dictionary of solver options, passed along to scipy.optimize.minimize.
         timeout_sec: Timeout in seconds to wait before aborting the optimization loop
             if not converged (will return the best found solution thus far).
 
@@ -153,24 +154,27 @@ def torch_minimize(
     scheduler: LRScheduler | Callable[[Optimizer], LRScheduler] | None = None,
     step_limit: int | None = None,
     timeout_sec: float | None = None,
-    stopping_criterion: Callable[[Tensor], bool] | None = None,
+    stopping_criterion: StoppingCriterion | None = None,
 ) -> OptimizationResult:
     r"""Generic torch.optim-based optimization routine.
 
     Args:
         closure: Callable that returns a tensor and an iterable of gradient tensors.
-            Responsible for setting relevant parameters' `grad` attributes.
+            Responsible for setting relevant parameters' ``grad`` attributes.
         parameters: A dictionary of tensors to be optimized.
-        bounds: An optional dictionary of bounds for elements of `parameters`.
-        callback: A callable taking `parameters` and an OptimizationResult as arguments.
-        optimizer: A `torch.optim.Optimizer` instance or a factory that takes
-            a list of parameters and returns an `Optimizer` instance.
-        scheduler: A `torch.optim.lr_scheduler._LRScheduler` instance or a factory
-            that takes a `Optimizer` instance and returns a `_LRSchedule` instance.
+        bounds: An optional dictionary of bounds for elements of ``parameters``.
+        callback: A callable taking ``parameters`` and an OptimizationResult as
+            arguments.
+        optimizer: A ``torch.optim.Optimizer`` instance or a factory that takes
+            a list of parameters and returns an ``Optimizer`` instance.
+        scheduler: A ``torch.optim.lr_scheduler._LRScheduler`` instance or a factory
+            that takes a ``Optimizer`` instance and returns a ``_LRSchedule`` instance.
         step_limit: Integer specifying a maximum number of optimization steps.
-            One of `step_limit`, `stopping_criterion`, or `timeout_sec` must be passed.
+            One of ``step_limit``, ``stopping_criterion``, or ``timeout_sec`` must
+            be passed.
         timeout_sec: Timeout in seconds before terminating the optimization loop.
-            One of `step_limit`, `stopping_criterion`, or `timeout_sec` must be passed.
+            One of ``step_limit``, ``stopping_criterion``, or ``timeout_sec`` must
+            be passed.
         stopping_criterion: A StoppingCriterion for the optimization loop.
 
     Returns:
@@ -189,6 +193,10 @@ def torch_minimize(
 
     if not (scheduler is None or isinstance(scheduler, LRScheduler)):
         scheduler = scheduler(optimizer)
+
+    if stopping_criterion is not None:
+        # Reset stopping criterion to ensure clean state for new optimization run
+        stopping_criterion.reset()
 
     _bounds = (
         {}

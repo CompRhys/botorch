@@ -21,7 +21,10 @@ module.exports={
     "https://cdnjs.cloudflare.com/ajax/libs/clipboard.js/2.0.0/clipboard.min.js",
   ],
   "markdown": {
-    format: "detect"
+    format: "detect",
+    hooks: {
+      onBrokenMarkdownLinks: "warn"
+    }
   },
   "stylesheets": [
     "/css/code_block_buttons.css",
@@ -39,7 +42,7 @@ module.exports={
     "wrapPagesHTML": true
   },
   "onBrokenLinks": "throw",
-  "onBrokenMarkdownLinks": "warn",
+  "trailingSlash": false,
   "presets": [
     [
       "@docusaurus/preset-classic",
@@ -47,7 +50,7 @@ module.exports={
         "docs": {
           "showLastUpdateAuthor": true,
           "showLastUpdateTime": true,
-          "editUrl": "https://github.com/pytorch/botorch/edit/main/docs/",
+          "editUrl": "https://github.com/meta-pytorch/botorch/edit/main/docs/",
           "path": "../docs",
           "sidebarPath": "../website/sidebars.js",
           remarkPlugins: [remarkMath],
@@ -88,6 +91,12 @@ module.exports={
           "position": "left"
         },
         {
+          "type": "custom-docSidebar",
+          "sidebarId": "notebooks_community",
+          "label": "Community Notebooks",
+          "position": "left"
+        },
+        {
           "href": "https://botorch.readthedocs.io/",
           "label": "API Reference",
           "position": "left",
@@ -118,7 +127,7 @@ module.exports={
             ],
         },
         {
-          "href": "https://github.com/pytorch/botorch",
+          "href": "https://github.com/meta-pytorch/botorch",
           "className": "header-github-link",
           "aria-label": "GitHub",
           "position": "right"
@@ -181,7 +190,7 @@ module.exports={
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/pytorch/botorch',
+              href: 'https://github.com/meta-pytorch/botorch',
             },
             {
               html: `<iframe

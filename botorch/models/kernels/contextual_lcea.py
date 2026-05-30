@@ -52,7 +52,7 @@ def get_permutation(decomposition: dict[str, list[int]]) -> list[int] | None:
             parameters.
     Returns:
         A permutation to reorder the parameters for (1) and (2).
-        Returning `None` means that ordering specified in `decomposition`
+        Returning ``None`` means that ordering specified in ``decomposition``
         satisfies (1) and (2).
     """
     permutation = None
@@ -87,7 +87,7 @@ class LCEAKernel(Kernel):
     r"""The Latent Context Embedding Additive (LCE-A) Kernel.
 
     This kernel is similar to the SACKernel, and is used when context breakdowns are
-    unbserverable. It assumes the same additive structure and a spatial kernel shared
+    unobservable. It assumes the same additive structure and a spatial kernel shared
     across contexts. Rather than assuming independence, LCEAKernel models the
     correlation in the latent functions for each context through learning context
     embeddings.
@@ -111,7 +111,7 @@ class LCEAKernel(Kernel):
             batch_shape: Batch shape as usual for gpytorch kernels. Model does not
                 support batch training. When batch_shape is non-empty, it is used for
                 loading hyper-parameter values generated from MCMC sampling.
-            train_embedding: A boolean indictor of whether to learn context embeddings.
+            train_embedding: A boolean indicator of whether to learn context embeddings.
             cat_feature_dict: Keys are context names and values are list of categorical
                 features i.e. {"context_name" : [cat_0, ..., cat_k]}. k equals the
                 number of categorical variables. If None, uses context names in the
@@ -154,7 +154,7 @@ class LCEAKernel(Kernel):
             embs_feature_dict=embs_feature_dict,
             embs_dim_list=embs_dim_list,
         )
-        # contruct embedding layer
+        # construct embedding layer
         if train_embedding:
             self._set_emb_layers()
         # task covariance matrix
@@ -399,17 +399,17 @@ class LCEAKernel(Kernel):
 
     def _eval_base_covar_perm(self, x1: Tensor, x2: Tensor) -> Tensor:
         """Computes the base covariance matrix on x1, x2, applying permutations and
-        reshaping the kernel matrix as required by `forward`.
+        reshaping the kernel matrix as required by ``forward``.
 
         NOTE: Using the notation n = num_observations, k = num_contexts, d = input_dim,
         the input tensors have to have the following shapes.
 
         Args:
-            x1: `batch_shape x n x (k*d)`-dim Tensor of kernel inputs.
-            x2: `batch_shape x n x (k*d)`-dim Tensor of kernel inputs.
+            x1: ``batch_shape x n x (k*d)``-dim Tensor of kernel inputs.
+            x2: ``batch_shape x n x (k*d)``-dim Tensor of kernel inputs.
 
         Returns:
-            `batch_shape x n x n x k x k`-dim Tensor of base covariance values.
+            ``batch_shape x n x n x k x k``-dim Tensor of base covariance values.
         """
         if self.permutation is not None:
             x1 = x1[..., self.permutation]

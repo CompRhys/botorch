@@ -24,18 +24,16 @@ jobs:
       # `uv pip ...` requires venv by default. This skips that requirement.
       UV_SYSTEM_PYTHON: 1
     steps:
-    - uses: actions/checkout@v4
-    - name: Fetch all history for all tags and branches
-      run: git fetch --prune --unshallow
-    - name: Install uv
-      uses: astral-sh/setup-uv@v5
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - uses: actions/checkout@v6
       with:
-        python-version: "3.13"
+        fetch-depth: 0
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.14"
     - name: Install dependencies
-      env:
-        ALLOW_LATEST_GPYTORCH_LINOP: true
       run: |
         uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
         uv pip install git+https://github.com/cornellius-gp/linear_operator.git
@@ -49,13 +47,9 @@ jobs:
         no_local_version=$(python -m setuptools_scm | cut -d "+" -f 1)
         echo "SETUPTOOLS_SCM_PRETEND_VERSION=${no_local_version}" >> $GITHUB_ENV
     - name: Build packages (wheel and source distribution)
-      env:
-        ALLOW_LATEST_GPYTORCH_LINOP: true
       run: |
         python -m build --sdist --wheel
     - name: Verify packages
-      env:
-        ALLOW_LATEST_GPYTORCH_LINOP: true
       run: |
         ./scripts/verify_py_packages.sh
     - name: Deploy to Test PyPI

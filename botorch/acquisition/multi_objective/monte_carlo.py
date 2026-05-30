@@ -43,9 +43,8 @@ from botorch.utils.multi_objective.hypervolume import (
 )
 from botorch.utils.objective import compute_smoothed_feasibility_indicator
 from botorch.utils.transforms import (
+    average_over_ensemble_models,
     concatenate_pending_points,
-    is_ensemble,
-    match_batch_shape,
     t_batch_mode_transform,
 )
 from torch import Tensor
@@ -78,27 +77,27 @@ class qExpectedHypervolumeImprovement(
 
         Args:
             model: A fitted model.
-            ref_point: A list or tensor with `m` elements representing the reference
+            ref_point: A list or tensor with ``m`` elements representing the reference
                 point (in the outcome space) w.r.t. to which compute the hypervolume.
                 This is a reference point for the objective values (i.e. after
-                applying`objective` to the samples).
-            partitioning: A `NondominatedPartitioning` module that provides the non-
+                applying ``objective`` to the samples).
+            partitioning: A ``NondominatedPartitioning`` module that provides the non-
                 dominated front and a partitioning of the non-dominated space in hyper-
                 rectangles. If constraints are present, this partitioning must only
                 include feasible points.
             sampler: The sampler used to draw base samples. If not given,
-                a sampler is generated using `get_sampler`.
+                a sampler is generated using ``get_sampler``.
             objective: The MCMultiOutputObjective under which the samples are evaluated.
-                Defaults to `IdentityMCMultiOutputObjective()`.
+                Defaults to ``IdentityMCMultiOutputObjective()``.
             constraints: A list of callables, each mapping a Tensor of dimension
-                `sample_shape x batch-shape x q x m` to a Tensor of dimension
-                `sample_shape x batch-shape x q`, where negative values imply
+                ``sample_shape x batch-shape x q x m`` to a Tensor of dimension
+                ``sample_shape x batch-shape x q``, where negative values imply
                 feasibility. The acquisition function will compute expected feasible
                 hypervolume.
-            X_pending: A `batch_shape x m x d`-dim Tensor of `m` design points that have
-                points that have been submitted for function evaluation but have not yet
-                been evaluated. Concatenated into `X` upon forward call. Copied and set
-                to have no gradient.
+            X_pending: A ``batch_shape x m x d``-dim Tensor of ``m`` design
+                points that have points that have been submitted for function
+                evaluation but have not yet been evaluated. Concatenated into ``X``
+                upon forward call. Copied and set to have no gradient.
             eta: The temperature parameter for the sigmoid function used for the
                 differentiable approximation of the constraints. In case of a float the
                 same eta is used for every constraint in constraints. In case of a
@@ -139,11 +138,11 @@ class qExpectedHypervolumeImprovement(
         r"""Compute the expected (feasible) hypervolume improvement given MC samples.
 
         Args:
-            samples: A `n_samples x batch_shape x q' x m`-dim tensor of samples.
-            X: A `batch_shape x q x d`-dim tensor of inputs.
+            samples: A ``n_samples x batch_shape x q' x m``-dim tensor of samples.
+            X: A ``batch_shape x q x d``-dim tensor of inputs.
 
         Returns:
-            A `batch_shape x (model_batch_shape)`-dim tensor of expected hypervolume
+            A ``batch_shape x (model_batch_shape)``-dim tensor of expected hypervolume
             improvement for each batch.
         """
         # Note that the objective may subset the outcomes (e.g. this will usually happen
@@ -156,7 +155,7 @@ class qExpectedHypervolumeImprovement(
                 samples=samples,
                 eta=self.eta,
                 fat=self.fat,
-            )  # `sample_shape x batch-shape x q`
+            )  # ``sample_shape x batch-shape x q``
         device = self.ref_point.device
         q_subset_indices = self.compute_q_subset_indices(q_out=q, device=device)
         batch_shape = obj.shape[:-2]
@@ -224,6 +223,7 @@ class qExpectedHypervolumeImprovement(
 
     @concatenate_pending_points
     @t_batch_mode_transform()
+    @average_over_ensemble_models
     def forward(self, X: Tensor) -> Tensor:
         posterior = self.model.posterior(X)
         samples = self.get_posterior_samples(posterior)
@@ -249,7 +249,7 @@ class qNoisyExpectedHypervolumeImprovement(
         cache_pending: bool = True,
         max_iep: int = 0,
         incremental_nehvi: bool = True,
-        cache_root: bool = True,
+        cache_root: bool | None = None,
         marginalize_dim: int | None = None,
     ) -> None:
         r"""q-Noisy Expected Hypervolume Improvement supporting m>=2 outcomes.
@@ -264,57 +264,57 @@ class qNoisyExpectedHypervolumeImprovement(
 
         Args:
             model: A fitted model.
-            ref_point: A list or tensor with `m` elements representing the reference
+            ref_point: A list or tensor with ``m`` elements representing the reference
                 point (in the outcome space) w.r.t. to which compute the hypervolume.
                 This is a reference point for the objective values (i.e. after
-                applying `objective` to the samples).
-            X_baseline: A `r x d`-dim Tensor of `r` design points that have already
+                applying ``objective`` to the samples).
+            X_baseline: A ``r x d``-dim Tensor of ``r`` design points that have already
                 been observed. These points are considered as potential approximate
                 pareto-optimal design points.
             sampler: The sampler used to draw base samples. If not given,
-                a sampler is generated using `get_sampler`.
+                a sampler is generated using ``get_sampler``.
                 Note: a pareto front is created for each mc sample, which can be
-                computationally intensive for `m` > 2.
+                computationally intensive for ``m`` > 2.
             objective: The MCMultiOutputObjective under which the samples are
-                evaluated. Defaults to `IdentityMCMultiOutputObjective()`.
+                evaluated. Defaults to ``IdentityMCMultiOutputObjective()``.
             constraints: A list of callables, each mapping a Tensor of dimension
-                `sample_shape x batch-shape x q x m` to a Tensor of dimension
-                `sample_shape x batch-shape x q`, where negative values imply
+                ``sample_shape x batch-shape x q x m`` to a Tensor of dimension
+                ``sample_shape x batch-shape x q``, where negative values imply
                 feasibility. The acquisition function will compute expected feasible
                 hypervolume.
-            X_pending: A `batch_shape x m x d`-dim Tensor of `m` design points that
+            X_pending: A ``batch_shape x m x d``-dim Tensor of ``m`` design points that
                 have points that have been submitted for function evaluation, but
                 have not yet been evaluated.
             eta: The temperature parameter for the sigmoid function used for the
                 differentiable approximation of the constraints. In case of a float the
-                same `eta` is used for every constraint in constraints. In case of a
+                same ``eta`` is used for every constraint in constraints. In case of a
                 tensor the length of the tensor must match the number of provided
                 constraints. The i-th constraint is then estimated with the i-th
-                `eta` value. For more details, on this parameter, see the docs of
-                `compute_smoothed_feasibility_indicator`.
+                ``eta`` value. For more details, on this parameter, see the docs of
+                ``compute_smoothed_feasibility_indicator``.
             fat: A Boolean flag indicating whether to use the heavy-tailed approximation
                 of the constraint indicator.
-            prune_baseline: If True, remove points in `X_baseline` that are
+            prune_baseline: If True, remove points in ``X_baseline`` that are
                 highly unlikely to be the pareto optimal and better than the
                 reference point. This can significantly improve computation time and
                 is generally recommended. In order to customize pruning parameters,
-                instead manually call `prune_inferior_points_multi_objective` on
-                `X_baseline` before instantiating the acquisition function.
+                instead manually call ``prune_inferior_points_multi_objective`` on
+                ``X_baseline`` before instantiating the acquisition function.
             alpha: The hyperparameter controlling the approximate non-dominated
                 partitioning. The default value of 0.0 means an exact partitioning
-                is used. As the number of objectives `m` increases, consider increasing
-                this parameter in order to limit computational complexity.
+                is used. As the number of objectives ``m`` increases, consider
+                increasing this parameter in order to limit computational complexity.
             cache_pending: A boolean indicating whether to use cached box
                 decompositions (CBD) for handling pending points. This is
                 generally recommended.
             max_iep: The maximum number of pending points before the box
                 decompositions will be recomputed.
             incremental_nehvi: A boolean indicating whether to compute the
-                incremental NEHVI from the `i`th point where `i=1, ..., q`
+                incremental NEHVI from the ``i``th point where ``i=1, ..., q``
                 under sequential greedy optimization, or the full qNEHVI over
-                `q` points.
+                ``q`` points.
             cache_root: A boolean indicating whether to cache the root
-                decomposition over `X_baseline` and use low-rank updates.
+                decomposition over ``X_baseline`` and use low-rank updates.
             marginalize_dim: A batch dimension that should be marginalized. For example,
                 this is useful when using a batched fully Bayesian model.
         """
@@ -347,30 +347,11 @@ class qNoisyExpectedHypervolumeImprovement(
         )
         self.fat = fat
 
-    @concatenate_pending_points
     @t_batch_mode_transform()
+    @average_over_ensemble_models
     def forward(self, X: Tensor) -> Tensor:
-        X_full = torch.cat([match_batch_shape(self.X_baseline, X), X], dim=-2)
-        # NOTE: To ensure that we correctly sample `f(X)` from the joint distribution
-        # `f((X_baseline, X)) ~ P(f | D)`, it is critical to compute the joint posterior
-        # over X *and* X_baseline -- which also contains pending points whenever there
-        # are any --  since the baseline and pending values `f(X_baseline)` are
-        # generally pre-computed and cached before the `forward` call, see the docs of
-        # `cache_pending` for details.
-        # TODO: Improve the efficiency by not re-computing the X_baseline-X_baseline
-        # covariance matrix, but only the covariance of
-        # 1) X and X, and
-        # 2) X and X_baseline.
-        posterior = self.model.posterior(X_full)
-        # Account for possible one-to-many transform and the MCMC batch dimension in
-        # `SaasFullyBayesianSingleTaskGP`
-        event_shape_lag = 1 if is_ensemble(self.model) else 2
-        n_w = (
-            posterior._extended_shape()[X_full.dim() - event_shape_lag]
-            // X_full.shape[-2]
-        )
-        q_in = X.shape[-2] * n_w
-        self._set_sampler(q_in=q_in, posterior=posterior)
-        samples = self._get_f_X_samples(posterior=posterior, q_in=q_in)
+        # Get samples from the posterior, and manually concatenate pending points that
+        # have not yet been cached. Shared with qLogNEHVI.
+        samples, X = self._compute_posterior_samples_and_concat_pending(X)
         # Add previous nehvi from pending points.
         return self._compute_qehvi(samples=samples, X=X) + self._prev_nehvi

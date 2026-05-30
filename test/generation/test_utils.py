@@ -9,7 +9,6 @@ from __future__ import annotations
 from itertools import product
 
 import torch
-
 from botorch.acquisition import FixedFeatureAcquisitionFunction
 from botorch.generation.utils import (
     _flip_sub_unique,
@@ -122,6 +121,7 @@ class TestGenerationUtils(BotorchTestCase):
                 fixed_features=fixed_features,
                 acquisition_function=acqf,
                 initial_conditions=initial_conditions,
+                d=initial_conditions.shape[-1],
                 lower_bounds=lower_bounds,
                 upper_bounds=upper_bounds,
                 inequality_constraints=inequality_constraints,

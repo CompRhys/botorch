@@ -21,7 +21,6 @@ Contributor: hvarfner
 from __future__ import annotations
 
 import warnings
-from typing import Optional
 
 import torch
 from botorch import settings
@@ -33,7 +32,11 @@ from botorch.acquisition.objective import ScalarizedPosteriorTransform
 from botorch.models.fully_bayesian import MCMC_DIM, SaasFullyBayesianSingleTaskGP
 from botorch.models.utils import fantasize as fantasize_flag
 from botorch.models.utils.gpytorch_modules import MIN_INFERRED_NOISE_LEVEL
-from botorch.utils.transforms import concatenate_pending_points, t_batch_mode_transform
+from botorch.utils.transforms import (
+    average_over_ensemble_models,
+    concatenate_pending_points,
+    t_batch_mode_transform,
+)
 from botorch_community.acquisition.bayesian_active_learning import DISTANCE_METRICS
 from torch import Tensor
 
@@ -48,10 +51,10 @@ class qSelfCorrectingBayesianOptimization(
         self,
         model: SaasFullyBayesianSingleTaskGP,
         optimal_outputs: Tensor,
-        optimal_inputs: Optional[Tensor] = None,
-        X_pending: Optional[Tensor] = None,
-        distance_metric: Optional[str] = "hellinger",
-        posterior_transform: Optional[ScalarizedPosteriorTransform] = None,
+        optimal_inputs: Tensor | None = None,
+        X_pending: Tensor | None = None,
+        distance_metric: str | None = "hellinger",
+        posterior_transform: ScalarizedPosteriorTransform | None = None,
     ) -> None:
         r"""Self-correcting Bayesian optimization [hvarfner2023scorebo]_ acquisition
         function. SCoreBO seeks to find accurate hyperparameters during the course
@@ -60,11 +63,11 @@ class qSelfCorrectingBayesianOptimization(
 
         Args:
             model: A fully bayesian model single-outcome model.
-            optimal_inputs: A `num_samples x num_models x d`-dim tensor containing
-                the sampled optimal inputs of dimension `d`.
-            optimal_outputs: A `num_samples x num_models x 1`-dim Tensor containing
+            optimal_inputs: A ``num_samples x num_models x d``-dim tensor containing
+                the sampled optimal inputs of dimension ``d``.
+            optimal_outputs: A ``num_samples x num_models x 1``-dim Tensor containing
                 the optimal objective values.
-            X_pending: A `batch_shape, m x d`-dim Tensor of `m` design points
+            X_pending: A ``batch_shape, m x d``-dim Tensor of ``m`` design points
             distance_metric: The distance metric used. Defaults to
                 "hellinger".
         """
@@ -74,7 +77,7 @@ class qSelfCorrectingBayesianOptimization(
         # to get num_optima x num_gps unique GPs
         self.optimal_outputs = optimal_outputs.unsqueeze(-2)
         self.optimal_output_values = (
-            posterior_transform.evaluate(self.optimal_outputs).unsqueeze(-1)
+            posterior_transform.evaluate(Y=self.optimal_outputs, X=None).unsqueeze(-1)
             if posterior_transform
             else self.optimal_outputs
         )
@@ -119,9 +122,10 @@ class qSelfCorrectingBayesianOptimization(
 
     @concatenate_pending_points
     @t_batch_mode_transform()
+    @average_over_ensemble_models
     def forward(self, X: Tensor) -> Tensor:
         # since we have two MC dims (over models and optima), we need to
-        # unsqueeze a second dim to accomodate the posterior pass
+        # unsqueeze a second dim to accommodate the posterior pass
         prev_posterior = self.model.posterior(
             X.unsqueeze(MCMC_DIM),
             observation_noise=True,

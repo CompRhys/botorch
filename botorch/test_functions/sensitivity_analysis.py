@@ -13,11 +13,11 @@ from torch import Tensor
 class Ishigami(SyntheticTestFunction):
     r"""Ishigami test function.
 
-    three-dimensional function (usually evaluated on `[-pi, pi]^3`):
+    three-dimensional function (usually evaluated on ``[-pi, pi]^3``):
 
         f(x) = sin(x_1) + a sin(x_2)^2 + b x_3^4 sin(x_1)
 
-    Here `a` and `b` are constants where a=7 and b=0.1 or b=0.05
+    Here ``a`` and ``b`` are constants where a=7 and b=0.1 or b=0.05
     Proposed to test sensitivity analysis methods because it exhibits strong
     nonlinearity and nonmonotonicity and a peculiar dependence on x_3.
     """
@@ -68,7 +68,7 @@ class Ishigami(SyntheticTestFunction):
 
         This function can be called separately to estimate the dgsm measure
         The exact global integrals of these values are already added under
-        as attributes dgsm_gradient, dgsm_gradient_bas, and dgsm_gradient_square.
+        as attributes dgsm_gradient, dgsm_gradient_abs, and dgsm_gradient_square.
 
         Args:
             X: Set of points at which to compute derivative measures.
@@ -80,8 +80,8 @@ class Ishigami(SyntheticTestFunction):
         dx_3 = 0.4 * (X[..., 2] ** 3) * torch.sin(X[..., 0])
         gradient_measure = [
             torch.mean(dx_1).item(),
-            torch.mean(dx_1).item(),
-            torch.mean(dx_1).item(),
+            torch.mean(dx_2).item(),
+            torch.mean(dx_3).item(),
         ]
         gradient_absolute_measure = [
             torch.mean(torch.abs(dx_1)).item(),
@@ -108,7 +108,7 @@ class Ishigami(SyntheticTestFunction):
 class Gsobol(SyntheticTestFunction):
     r"""Gsobol test function.
 
-    d-dimensional function (usually evaluated on `[0, 1]^d`):
+    d-dimensional function (usually evaluated on ``[0, 1]^d``):
 
         f(x) = Prod_{i=1}\^{d} ((\|4x_i-2\|+a_i)/(1+a_i)), a_i >=0
 
@@ -207,7 +207,7 @@ class Gsobol(SyntheticTestFunction):
 class Morris(SyntheticTestFunction):
     r"""Morris test function.
 
-    20-dimensional function (usually evaluated on `[0, 1]^20`):
+    20-dimensional function (usually evaluated on ``[0, 1]^20``):
 
         f(x) = sum_{i=1}\^20 beta_i w_i + sum_{i<j}\^20 beta_ij w_i w_j
         + sum_{i<j<l}\^20 beta_ijl w_i w_j w_l + 5w_1 w_2 w_3 w_4

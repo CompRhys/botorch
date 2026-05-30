@@ -9,10 +9,10 @@ import itertools
 from unittest import mock
 from unittest.mock import patch
 
-import pyro
-
+import jax.numpy as jnp
+import numpyro
 import torch
-from botorch import fit_fully_bayesian_model_nuts, utils
+from botorch import utils
 from botorch.acquisition.analytic import (
     ExpectedImprovement,
     PosteriorMean,
@@ -29,6 +29,7 @@ from botorch.acquisition.monte_carlo import (
     qProbabilityOfImprovement,
     qSimpleRegret,
     qUpperConfidenceBound,
+    SampleReducingMCAcquisitionFunction,
 )
 from botorch.acquisition.multi_objective import (
     prune_inferior_points_multi_objective,
@@ -40,6 +41,7 @@ from botorch.acquisition.multi_objective.logei import (
     qLogNoisyExpectedHypervolumeImprovement,
 )
 from botorch.acquisition.utils import prune_inferior_points
+from botorch.fit import fit_fully_bayesian_model_nuts
 from botorch.models import ModelList, ModelListGP
 from botorch.models.deterministic import GenericDeterministicModel
 from botorch.models.fully_bayesian import (
@@ -55,11 +57,7 @@ from botorch.models.fully_bayesian import (
 )
 from botorch.models.transforms import Normalize, Standardize
 from botorch.models.transforms.input import ChainedInputTransform, Warp
-from botorch.posteriors.fully_bayesian import (
-    batched_bisect,
-    FullyBayesianPosterior,
-    GaussianMixturePosterior,
-)
+from botorch.posteriors.fully_bayesian import batched_bisect, GaussianMixturePosterior
 from botorch.sampling.get_sampler import get_sampler
 from botorch.utils.datasets import SupervisedDataset
 from botorch.utils.multi_objective.box_decompositions.non_dominated import (
@@ -73,11 +71,6 @@ from gpytorch.kernels.linear_kernel import LinearKernel
 from gpytorch.likelihoods import FixedNoiseGaussianLikelihood, GaussianLikelihood
 from gpytorch.means import ConstantMean
 from linear_operator.operators import to_linear_operator
-from pyro.ops.integrator import (
-    _EXCEPTION_HANDLERS,
-    potential_grad,
-    register_exception_handler,
-)
 
 
 class CustomPyroModel(PyroModel):
@@ -90,11 +83,244 @@ class CustomPyroModel(PyroModel):
     def load_mcmc_samples(self, mcmc_samples) -> None:
         pass
 
+    def get_dummy_mcmc_samples(self, num_mcmc_samples, **tkwargs):
+        return {}
+
+
+class TestPyroModelPriorMode(BotorchTestCase):
+    """Tests for the _prior_mode attribute and sample_observations method."""
+
+    def test_prior_mode_attribute_on_base_class(self) -> None:
+        """Test that _prior_mode is accessible on the base PyroModel class."""
+        # Test that _prior_mode defaults to False
+        self.assertFalse(PyroModel._prior_mode)
+
+        # Test that subclasses inherit the attribute
+        self.assertFalse(MaternPyroModel._prior_mode)
+        self.assertFalse(SaasPyroModel._prior_mode)
+        self.assertFalse(LinearPyroModel._prior_mode)
+
+    def test_sample_observations_normal_mode(self) -> None:
+        """Test sample_observations in normal (non-prior) mode."""
+        n, d = 5, 3
+
+        # Create a PyroModel subclass instance
+        pyro_model = MaternPyroModel()
+        train_X = torch.rand(n, d, dtype=torch.double, device=self.device)
+        train_Y = torch.rand(n, 1, dtype=torch.double, device=self.device)
+        pyro_model.set_inputs(train_X=train_X, train_Y=train_Y)
+
+        # Ensure _prior_mode is False
+        self.assertFalse(pyro_model._prior_mode)
+
+        mean = jnp.zeros(1)
+        K_noiseless = jnp.eye(n)
+        noise = jnp.array(0.1)
+
+        # In normal mode, sample_observations should call numpyro.sample with obs
+        with patch.object(numpyro, "sample") as mock_sample:
+            pyro_model.sample_observations(
+                mean=mean, K_noiseless=K_noiseless, noise=noise
+            )
+            # Verify numpyro.sample was called with obs argument
+            mock_sample.assert_called_once()
+            call_kwargs = mock_sample.call_args[1]
+            self.assertIn("obs", call_kwargs)
+            self.assertEqual(mock_sample.call_args[0][0], "Y")
+
+    def test_sample_observations_prior_mode(self) -> None:
+        """Test sample_observations in prior mode."""
+        n, d = 5, 3
+
+        # Create a PyroModel subclass instance
+        pyro_model = MaternPyroModel()
+        train_X = torch.rand(n, d, dtype=torch.double, device=self.device)
+        train_Y = torch.rand(n, 1, dtype=torch.double, device=self.device)
+        pyro_model.set_inputs(train_X=train_X, train_Y=train_Y)
+
+        # Set _prior_mode to True
+        pyro_model._prior_mode = True
+
+        mean = jnp.zeros(1)
+        K_noiseless = jnp.eye(n)
+        noise = jnp.array(0.1)
+
+        # In prior mode, sample_observations should sample both "f" and "Y"
+        with patch.object(numpyro, "sample") as mock_sample:
+            mock_sample.return_value = jnp.zeros(n)
+            pyro_model.sample_observations(
+                mean=mean, K_noiseless=K_noiseless, noise=noise
+            )
+            # Verify numpyro.sample was called twice (for "f" and "Y")
+            self.assertEqual(mock_sample.call_count, 2)
+            # First call should be for "f"
+            self.assertEqual(mock_sample.call_args_list[0][0][0], "f")
+            # Second call should be for "Y"
+            self.assertEqual(mock_sample.call_args_list[1][0][0], "Y")
+            # Neither call should have obs argument
+            for call in mock_sample.call_args_list:
+                self.assertNotIn("obs", call[1])
+
+    def test_sample_observations_empty_data(self) -> None:
+        """Test that sample_observations returns early for empty data."""
+        d = 3
+
+        # Create a PyroModel subclass instance with empty data
+        pyro_model = MaternPyroModel()
+        train_X = torch.rand(0, d, dtype=torch.double, device=self.device)
+        train_Y = torch.rand(0, 1, dtype=torch.double, device=self.device)
+        pyro_model.set_inputs(train_X=train_X, train_Y=train_Y)
+
+        mean = jnp.zeros(1)
+        K_noiseless = jnp.eye(0)
+        noise = jnp.array(0.1)
+
+        # sample_observations should return early without calling numpyro.sample
+        with patch.object(numpyro, "sample") as mock_sample:
+            pyro_model.sample_observations(
+                mean=mean, K_noiseless=K_noiseless, noise=noise
+            )
+            mock_sample.assert_not_called()
+
+    def test_matern_pyro_model_sample_with_prior_mode(self) -> None:
+        """Test MaternPyroModel.sample() with _prior_mode enabled."""
+        n, d = 5, 3
+
+        pyro_model = MaternPyroModel()
+        train_X = torch.rand(n, d, dtype=torch.double, device=self.device)
+        train_Y = torch.rand(n, 1, dtype=torch.double, device=self.device)
+        pyro_model.set_inputs(train_X=train_X, train_Y=train_Y)
+
+        # Enable prior mode
+        pyro_model._prior_mode = True
+
+        # Mock numpyro.sample to return valid JAX arrays
+        def mock_sample_fn(name, dist, **kwargs):
+            if name == "mean":
+                return jnp.array(0.0)
+            elif name == "noise":
+                return jnp.array(0.01)
+            elif name == "lengthscale":
+                return jnp.ones(d)
+            elif name == "f":
+                return jnp.zeros(n)
+            elif name == "Y":
+                return jnp.zeros(n)
+            else:
+                return jnp.array(1.0)
+
+        with patch.object(numpyro, "sample", side_effect=mock_sample_fn):
+            # Should not raise any errors
+            pyro_model.sample()
+            # Check that prior samples are stored
+            self.assertIsNotNone(pyro_model.f_prior_sample)
+            self.assertIsNotNone(pyro_model.Y_prior_sample)
+
+
+class TestPyroModelWarp(BotorchTestCase):
+    """Tests for the PyroModel.warp method."""
+
+    def test_warp(self) -> None:
+        """Test that warp applies the Kumaraswamy CDF correctly."""
+        pyro_model = CustomPyroModel()
+        tkwargs = {"dtype": torch.double, "device": self.device}
+
+        with self.subTest("basic"):
+            n, d = 5, 3
+            X = torch.rand(n, d, **tkwargs)
+            c0 = torch.ones(d, **tkwargs) * 2.0
+            c1 = torch.ones(d, **tkwargs) * 3.0
+            warped = pyro_model.warp(X, c0=c0, c1=c1)
+            self.assertEqual(warped.shape, X.shape)
+            self.assertTrue((warped > 0).all())
+            self.assertTrue((warped < 1).all())
+
+        with self.subTest("identity_concentrations"):
+            eps = 1e-7
+            id_model = CustomPyroModel(eps=eps)
+            n, d = 10, 2
+            X = torch.rand(n, d, **tkwargs) * 0.8 + 0.1
+            c0 = torch.ones(d, **tkwargs)
+            c1 = torch.ones(d, **tkwargs)
+            warped = id_model.warp(X, c0=c0, c1=c1)
+            self.assertAllClose(warped, X, atol=3 * eps)
+
+        with self.subTest("with_indices"):
+            n, d = 5, 4
+            indices = [0, 2]
+            idx_model = CustomPyroModel(indices_to_warp=indices)
+            X = torch.rand(n, d, **tkwargs)
+            c0 = torch.tensor([2.0, 3.0], **tkwargs)
+            c1 = torch.tensor([3.0, 2.0], **tkwargs)
+            warped = idx_model.warp(X, c0=c0, c1=c1)
+            self.assertEqual(warped.shape, X.shape)
+            self.assertAllClose(warped[:, 1], X[:, 1])
+            self.assertAllClose(warped[:, 3], X[:, 3])
+            self.assertFalse(torch.allclose(warped[:, 0], X[:, 0]))
+            self.assertFalse(torch.allclose(warped[:, 2], X[:, 2]))
+
+        with self.subTest("output_range"):
+            n, d = 20, 3
+            X = torch.rand(n, d, **tkwargs)
+            for c0_val, c1_val in [(0.5, 0.5), (2.0, 3.0), (10.0, 0.1)]:
+                c0 = torch.full((d,), c0_val, **tkwargs)
+                c1 = torch.full((d,), c1_val, **tkwargs)
+                warped = pyro_model.warp(X, c0=c0, c1=c1)
+                self.assertTrue((warped >= 0).all())
+                self.assertTrue((warped <= 1).all())
+
+        with self.subTest("batch_shape"):
+            b, n, d = 3, 5, 2
+            X = torch.rand(b, n, d, **tkwargs)
+            c0 = torch.ones(d, **tkwargs) * 2.0
+            c1 = torch.ones(d, **tkwargs) * 3.0
+            warped = pyro_model.warp(X, c0=c0, c1=c1)
+            self.assertEqual(warped.shape, X.shape)
+
+        with self.subTest("boundary_inputs"):
+            eps = 1e-7
+            bnd_model = CustomPyroModel(eps=eps)
+            d = 2
+            X = torch.tensor([[0.0, 1.0], [0.5, 0.5]], **tkwargs)
+            c0 = torch.ones(d, **tkwargs) * 2.0
+            c1 = torch.ones(d, **tkwargs) * 2.0
+            warped = bnd_model.warp(X, c0=c0, c1=c1)
+            self.assertFalse(warped.isnan().any())
+            self.assertFalse(warped.isinf().any())
+            self.assertTrue((warped > 0).all())
+            self.assertTrue((warped < 1).all())
+
+        with self.subTest("differentiable"):
+            n, d = 5, 3
+            X = torch.rand(n, d, **tkwargs, requires_grad=True)
+            c0 = torch.full((d,), 2.0, **tkwargs)
+            c1 = torch.full((d,), 3.0, **tkwargs)
+            warped = pyro_model.warp(X, c0=c0, c1=c1)
+            warped.sum().backward()
+            self.assertIsNotNone(X.grad)
+            self.assertFalse(X.grad.isnan().any())
+            self.assertFalse(X.grad.isinf().any())
+
 
 class TestSaasFullyBayesianSingleTaskGP(BotorchTestCase):
     model_cls: type[FullyBayesianSingleTaskGP] = SaasFullyBayesianSingleTaskGP
     pyro_model_cls: type[PyroModel] = SaasPyroModel
     model_kwargs = {}
+
+    @property
+    def expected_keys_warp(self) -> list[str]:
+        return [
+            "input_transform.concentration1_constraint.upper_bound",
+            "input_transform.concentration0",
+            "input_transform.concentration1_constraint.lower_bound",
+            "input_transform._normalize._coefficient",
+            "input_transform.concentration0_constraint.upper_bound",
+            "input_transform._normalize.indices",
+            "input_transform.concentration0_constraint.lower_bound",
+            "input_transform.concentration1",
+            "input_transform._normalize._offset",
+            "input_transform.indices",
+        ]
 
     @property
     def expected_keys(self) -> list[str]:
@@ -123,6 +349,8 @@ class TestSaasFullyBayesianSingleTaskGP(BotorchTestCase):
                 )
             ]
         )
+        if self.model_kwargs.get("use_input_warping", False):
+            expected_keys.extend(self.expected_keys_warp)
         return expected_keys
 
     @property
@@ -192,7 +420,13 @@ class TestSaasFullyBayesianSingleTaskGP(BotorchTestCase):
             mcmc_samples["noise"] = torch.rand(num_samples, 1, **tkwargs)
         if self.model_cls is SaasFullyBayesianSingleTaskGP:
             mcmc_samples["outputscale"] = torch.rand(num_samples, **tkwargs)
+        if self.model_kwargs.get("use_input_warping", False):
+            for k in ("c0", "c1"):
+                mcmc_samples[k] = torch.rand(num_samples, 1, dim, **tkwargs)
         return mcmc_samples
+
+    def test_supports_batched_models(self) -> None:
+        self.assertFalse(self.model_cls._supports_batched_models)
 
     def test_raises(self) -> None:
         tkwargs = {"device": self.device, "dtype": torch.double}
@@ -364,8 +598,12 @@ class TestSaasFullyBayesianSingleTaskGP(BotorchTestCase):
                 self.assertEqual(
                     mixture_covariance.shape, torch.Size(batch_shape + batch_shape[-1:])
                 )
-                # Check that it is PSD.
-                torch.linalg.cholesky(mixture_covariance.to_dense())
+                # Check that it is PSD (add small jitter for numerical stability).
+                cov_dense = mixture_covariance.to_dense()
+                jitter = 1e-6 * torch.eye(
+                    cov_dense.shape[-1], dtype=cov_dense.dtype, device=cov_dense.device
+                )
+                torch.linalg.cholesky(cov_dense + jitter)
                 self.assertEqual(quantile1.shape, torch.Size(batch_shape + [1]))
                 self.assertEqual(quantile2.shape, torch.Size(batch_shape + [1]))
                 self.assertTrue((quantile2 > quantile1).all())
@@ -545,19 +783,21 @@ class TestSaasFullyBayesianSingleTaskGP(BotorchTestCase):
             self.assertAllClose(pred_var1, pred_var2)
 
             # check the transforms
-            if issubclass(self.model_cls, FullyBayesianSingleTaskGP):
-                self.assertIsInstance(gp2.input_transform, Normalize)
-            else:
+            use_input_warping = self.model_kwargs.get("use_input_warping", False)
+            if use_input_warping or (self.model_cls is FullyBayesianLinearSingleTaskGP):
                 self.assertIsInstance(gp2.input_transform, ChainedInputTransform)
                 tf_iter = iter(gp2.input_transform.values())
                 tf = next(tf_iter)
                 self.assertIsInstance(tf, Normalize)
-                if self.model_kwargs["use_input_warping"]:
+                if use_input_warping:
                     tf = next(tf_iter)
                     self.assertIsInstance(tf, Warp)
-                tf = next(tf_iter)
-                self.assertIsInstance(tf, Normalize)
-                self.assertEqual(tf.center, 0.0)
+                if self.model_cls is FullyBayesianLinearSingleTaskGP:
+                    tf = next(tf_iter)
+                    self.assertIsInstance(tf, Normalize)
+                    self.assertEqual(tf.center, 0.0)
+            else:
+                self.assertIsInstance(gp2.input_transform, Normalize)
 
     def test_acquisition_functions(self) -> None:
         tkwargs = {"device": self.device, "dtype": torch.double}
@@ -671,19 +911,23 @@ class TestSaasFullyBayesianSingleTaskGP(BotorchTestCase):
             ),
         ]
 
-        for acqf in acquisition_functions:
-            for batch_shape in [[5], [6, 5, 2]]:
-                test_X = torch.rand(*batch_shape, 1, 4, **tkwargs)
-                # Testing that the t_batch_mode_transform works correctly for
-                # fully Bayesian models with log-space acquisition functions.
-                with patch.object(
-                    utils.transforms, "logmeanexp", wraps=logmeanexp
-                ) as mock:
-                    self.assertEqual(acqf(test_X).shape, torch.Size(batch_shape))
-                    if acqf._log:
-                        mock.assert_called_once()
-                    else:
-                        mock.assert_not_called()
+        for acqf, batch_shape in itertools.product(
+            acquisition_functions, [[5], [6, 5, 2]]
+        ):
+            test_X = torch.rand(*batch_shape, 1, 4, **tkwargs)
+            # Testing that the ``average_over_ensemble_models`` decorator works
+            # correctly for fully Bayesian models with log-space acquisition
+            # functions.
+            with patch.object(utils.transforms, "logmeanexp", wraps=logmeanexp) as mock:
+                self.assertEqual(acqf(test_X).shape, torch.Size(batch_shape))
+                # The sample-reducing acquisition functions are using the
+                # ``sample_reduction`` to average over the ensembles.
+                if acqf._log and not isinstance(
+                    acqf, SampleReducingMCAcquisitionFunction
+                ):
+                    mock.assert_called_once()
+                else:
+                    mock.assert_not_called()
 
         # Test prune_inferior_points
         X_pruned = prune_inferior_points(model=model, X=train_X)
@@ -765,7 +1009,7 @@ class TestSaasFullyBayesianSingleTaskGP(BotorchTestCase):
             else:
                 self.assertTrue(Yvar.equal(data_dict["train_Yvar"]))
 
-    def test_condition_on_observation(self) -> None:
+    def test_condition_on_observations(self) -> None:
         # The following conditioned data shapes should work (output describes):
         # training data shape after cond(batch shape in output is req. in gpytorch)
         # X: num_models x n x d, Y: num_models x n x d --> num_models x n x d
@@ -923,16 +1167,35 @@ class TestSaasFullyBayesianSingleTaskGP(BotorchTestCase):
                     dist.cdf(x), q * torch.ones(1, 5, 1, **tkwargs), atol=1e-4
                 )
 
-    def test_deprecated_posterior(self) -> None:
-        mean = torch.randn(1, 5)
-        variance = torch.rand(1, 5)
-        covar = torch.diag_embed(variance)
-        mvn = MultivariateNormal(mean, to_linear_operator(covar))
-        with self.assertWarnsRegex(
-            DeprecationWarning, "`FullyBayesianPosterior` is marked for deprecation"
+    def test_predict_in_train_mode(self) -> None:
+        torch.manual_seed(16)
+        for infer_noise, dtype in itertools.product(
+            [True, False], [torch.float, torch.double]
         ):
-            posterior = FullyBayesianPosterior(distribution=mvn)
-        self.assertIsInstance(posterior, GaussianMixturePosterior)
+            tkwargs = {"device": self.device, "dtype": dtype}
+            train_X, train_Y, train_Yvar, _ = self._get_data_and_model(
+                infer_noise=infer_noise, **tkwargs
+            )
+            # Fit a model and check that the hyperparameters have the correct shape
+            model = self.model_cls(
+                train_X=train_X,
+                train_Y=train_Y,
+                train_Yvar=train_Yvar,
+                input_transform=Normalize(d=train_X.shape[-1]),
+                outcome_transform=Standardize(m=1),
+                **self.model_kwargs,
+            )
+            fit_fully_bayesian_model_nuts(
+                model, warmup_steps=8, num_samples=5, thinning=2, disable_progbar=True
+            )
+            # check that input transforms are called when calling forward in train mode
+            model.train(reset=False)
+            with mock.patch.object(
+                model.input_transform, "forward", wraps=model.input_transform.forward
+            ) as mock_input_tf:
+                with torch.no_grad():
+                    model(*model.train_inputs)
+                mock_input_tf.assert_called_once()
 
 
 class TestFullyBayesianSingleTaskGP(TestSaasFullyBayesianSingleTaskGP):
@@ -940,64 +1203,12 @@ class TestFullyBayesianSingleTaskGP(TestSaasFullyBayesianSingleTaskGP):
     pyro_model_cls: type[PyroModel] = MaternPyroModel
 
 
-class TestPyroCatchNumericalErrors(BotorchTestCase):
-    def tearDown(self) -> None:
-        super().tearDown()
-        # Remove exception handler so they don't affect the tests on rerun
-        # TODO: Add functionality to pyro to clear the handlers so this
-        # does not require touching the internals.
-        del _EXCEPTION_HANDLERS["foo_runtime"]
+class TestSaasFullyBayesianSingleTaskGPWarped(TestSaasFullyBayesianSingleTaskGP):
+    model_kwargs = {"use_input_warping": True}
 
-    def test_pyro_catch_error(self) -> None:
-        def potential_fn(z):
-            mvn = pyro.distributions.MultivariateNormal(
-                loc=torch.zeros(2),
-                covariance_matrix=z["K"],
-            )
-            return mvn.log_prob(torch.zeros(2))
 
-        # Test base case where everything is fine
-        z = {"K": torch.eye(2)}
-        grads, val = potential_grad(potential_fn, z)
-        self.assertAllClose(grads["K"], -0.5 * torch.eye(2))
-        norm_mvn = torch.distributions.Normal(0, 1)
-        self.assertAllClose(val, 2 * norm_mvn.log_prob(torch.tensor(0.0)))
-
-        # Default behavior should catch the ValueError when trying to instantiate
-        # the MVN and return NaN instead
-        z = {"K": torch.ones(2, 2)}
-        _, val = potential_grad(potential_fn, z)
-        self.assertTrue(torch.isnan(val))
-
-        # Default behavior should catch the LinAlgError when peforming a
-        # Cholesky decomposition and return NaN instead
-        def potential_fn_chol(z) -> torch.Tensor:
-            return torch.linalg.cholesky(z["K"])
-
-        _, val = potential_grad(potential_fn_chol, z)
-        self.assertTrue(torch.isnan(val))
-
-        # Default behavior should not catch other errors
-        def potential_fn_rterr_foo(z):
-            raise RuntimeError("foo")
-
-        with self.assertRaisesRegex(RuntimeError, "foo"):
-            potential_grad(potential_fn_rterr_foo, z)
-
-        # But once we register this specific error then it should
-        def catch_runtime_error(e) -> bool:
-            return type(e) is RuntimeError and "foo" in str(e)
-
-        register_exception_handler("foo_runtime", catch_runtime_error)
-        _, val = potential_grad(potential_fn_rterr_foo, z)
-        self.assertTrue(torch.isnan(val))
-
-        # Unless the error message is different
-        def potential_fn_rterr_bar(z):
-            raise RuntimeError("bar")
-
-        with self.assertRaisesRegex(RuntimeError, "bar"):
-            potential_grad(potential_fn_rterr_bar, z)
+class TestFullyBayesianSingleTaskGPWarped(TestFullyBayesianSingleTaskGP):
+    model_kwargs = {"use_input_warping": True}
 
 
 class TestFullyBayesianLinearSingleTaskGP(TestSaasFullyBayesianSingleTaskGP):
@@ -1009,6 +1220,23 @@ class TestFullyBayesianLinearSingleTaskGP(TestSaasFullyBayesianSingleTaskGP):
         return X.sum(dim=-1, keepdim=True)
 
     @property
+    def expected_keys_warp(self) -> list[str]:
+        return [
+            "input_transform.warp.concentration1_constraint.upper_bound",
+            "input_transform.warp.concentration0",
+            "input_transform.warp.concentration1_constraint.lower_bound",
+            "input_transform.normalize._coefficient",
+            "input_transform.warp._normalize._coefficient",
+            "input_transform.warp.concentration0_constraint.upper_bound",
+            "input_transform.normalize._offset",
+            "input_transform.warp._normalize.indices",
+            "input_transform.warp.concentration0_constraint.lower_bound",
+            "input_transform.warp.concentration1",
+            "input_transform.warp._normalize._offset",
+            "input_transform.warp.indices",
+        ]
+
+    @property
     def expected_keys(self) -> list[str]:
         expected_keys = [
             "mean_module.raw_constant",
@@ -1017,22 +1245,7 @@ class TestFullyBayesianLinearSingleTaskGP(TestSaasFullyBayesianSingleTaskGP):
             "covar_module.raw_variance_constraint.upper_bound",
         ]
         if self.model_kwargs["use_input_warping"]:
-            expected_keys.extend(
-                [
-                    "input_transform.warp.concentration1_constraint.upper_bound",
-                    "input_transform.warp.concentration0",
-                    "input_transform.warp.concentration1_constraint.lower_bound",
-                    "input_transform.normalize._coefficient",
-                    "input_transform.warp._normalize._coefficient",
-                    "input_transform.warp.concentration0_constraint.upper_bound",
-                    "input_transform.normalize._offset",
-                    "input_transform.warp._normalize.indices",
-                    "input_transform.warp.concentration0_constraint.lower_bound",
-                    "input_transform.warp.concentration1",
-                    "input_transform.warp._normalize._offset",
-                    "input_transform.warp.indices",
-                ]
-            )
+            expected_keys.extend(self.expected_keys_warp)
         else:
             expected_keys.extend(
                 ["input_transform._offset", "input_transform._coefficient"]
@@ -1068,3 +1281,19 @@ class TestFullyBayesianLinearSingleTaskGP(TestSaasFullyBayesianSingleTaskGP):
 
 class TestFullyBayesianLinearWarpingSingleTaskGP(TestFullyBayesianLinearSingleTaskGP):
     model_kwargs = {"use_input_warping": True}
+
+
+class TestNumpyVersionCheck(BotorchTestCase):
+    def test_missing_jax_raises_on_instantiation(self) -> None:
+        """Test that missing JAX raises ImportError at model instantiation."""
+        from botorch.models import fully_bayesian
+        from botorch.models.fully_bayesian import _check_jax_available
+
+        with patch.object(fully_bayesian, "_HAS_JAX", False):
+            with self.assertRaises(ImportError):
+                _check_jax_available()
+            with self.assertRaises(ImportError):
+                SaasFullyBayesianSingleTaskGP(
+                    train_X=torch.rand(10, 2),
+                    train_Y=torch.rand(10, 1),
+                )

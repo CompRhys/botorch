@@ -44,7 +44,7 @@ class MockOptimizer:
         warnings: Iterable[WarningMessage] = (),
         exception: BaseException | None = None,
     ):
-        r"""Class used to mock `optimizer` argument to `fit_gpytorch_mll."""
+        r"""Class used to mock ``optimizer`` argument to `fit_gpytorch_mll."""
         self.randomize_requires_grad = randomize_requires_grad
         self.warnings = warnings
         self.exception = exception
@@ -90,33 +90,69 @@ class TestFitAPI(BotorchTestCase):
                 train_X=train_X,
                 train_Y=train_Y,
                 input_transform=Normalize(d=1),
-                outcome_transform=Standardize(m=1),
             )
             self.mll = ExactMarginalLogLikelihood(model.likelihood, model)
 
     def test_fit_gpytorch_mll(self):
-        # Test that `optimizer` is only passed when non-None
-        with patch.object(fit, "FitGPyTorchMLL") as mock_dispatcher:
-            fit_gpytorch_mll(self.mll, optimizer=None)
-            mock_dispatcher.assert_called_once_with(
-                self.mll,
-                type(self.mll.likelihood),
-                type(self.mll.model),
+        # Test that fit_gpytorch_mll routes to _fit_fallback for standard MLL
+        with patch.object(fit, "_fit_fallback") as mock_fallback:
+            mock_fallback.return_value = self.mll
+            fit_gpytorch_mll(mll=self.mll, optimizer=None)
+            mock_fallback.assert_called_once_with(
+                mll=self.mll,
                 closure=None,
                 closure_kwargs=None,
                 optimizer_kwargs=None,
             )
 
-            fit_gpytorch_mll(self.mll, optimizer="foo")
-            mock_dispatcher.assert_called_with(
-                self.mll,
-                type(self.mll.likelihood),
-                type(self.mll.model),
+        with patch.object(fit, "_fit_fallback") as mock_fallback:
+            mock_fallback.return_value = self.mll
+            fit_gpytorch_mll(mll=self.mll, optimizer="foo")
+            mock_fallback.assert_called_once_with(
+                mll=self.mll,
                 closure=None,
                 closure_kwargs=None,
                 optimizer="foo",
                 optimizer_kwargs=None,
             )
+
+    def test_custom_fit_protocol(self):
+        """If model has custom_fit, fit_gpytorch_mll calls it directly."""
+        mock_custom_fit = MagicMock(return_value=self.mll)
+        self.mll.model.custom_fit = mock_custom_fit
+
+        with self.subTest("custom_fit_called"):
+            result = fit_gpytorch_mll(mll=self.mll, optimizer_kwargs={"maxiter": 5})
+            mock_custom_fit.assert_called_once_with(
+                mll=self.mll,
+                closure=None,
+                closure_kwargs=None,
+                optimizer_kwargs={"maxiter": 5},
+            )
+            self.assertIs(result, self.mll)
+
+        with self.subTest("custom_fit_with_optimizer"):
+            mock_custom_fit.reset_mock()
+            result = fit_gpytorch_mll(
+                mll=self.mll, optimizer="my_opt", optimizer_kwargs={"a": 1}
+            )
+            mock_custom_fit.assert_called_once_with(
+                mll=self.mll,
+                closure=None,
+                closure_kwargs=None,
+                optimizer="my_opt",
+                optimizer_kwargs={"a": 1},
+            )
+
+        with self.subTest("fallback_not_called"):
+            # Ensure _fit_fallback is NOT called when custom_fit exists
+            with patch.object(fit, "_fit_fallback") as mock_fallback:
+                mock_custom_fit.reset_mock()
+                fit_gpytorch_mll(mll=self.mll)
+                mock_fallback.assert_not_called()
+                mock_custom_fit.assert_called_once()
+
+        del self.mll.model.custom_fit
 
 
 class TestFitFallback(BotorchTestCase):
@@ -137,7 +173,6 @@ class TestFitFallback(BotorchTestCase):
                     train_Y=train_Y,
                     train_Yvar=torch.full_like(train_Y, 0.1) if fixed_noise else None,
                     input_transform=Normalize(d=1),
-                    outcome_transform=Standardize(m=output_dim),
                 )
                 self.assertIsInstance(model.covar_module, RBFKernel)
 
@@ -165,7 +200,7 @@ class TestFitFallback(BotorchTestCase):
             self._test_exceptions(mll, self.checkpoints[case])
 
     def _test_main(self, mll, ckpt):
-        r"""Main test for `_fit_fallback`."""
+        r"""Main test for ``_fit_fallback``."""
         optimizer = MockOptimizer()
         optimizer.warnings = [
             WarningMessage("test_runtime_warning", RuntimeWarning, __file__, 0),
@@ -175,12 +210,10 @@ class TestFitFallback(BotorchTestCase):
             with catch_warnings(), module_rollback_ctx(mll, checkpoint=ckpt):
                 try:
                     fit._fit_fallback(
-                        mll,
-                        None,
-                        None,
+                        mll=mll,
                         max_attempts=2,
                         optimizer=optimizer,
-                        warning_handler=lambda w: not should_fail,
+                        warning_handler=lambda w, sf=should_fail: not sf,
                     )
                 except ModelFittingError:
                     failed = True
@@ -205,17 +238,17 @@ class TestFitFallback(BotorchTestCase):
                         except AttributeError:
                             pass
 
-        # Test `closure_kwargs`
+        # Test ``closure_kwargs``
         with self.subTest("closure_kwargs"):
             mock_closure = MagicMock(side_effect=StopIteration("foo"))
             with self.assertRaisesRegex(StopIteration, "foo"):
                 fit._fit_fallback(
-                    mll, None, None, closure=mock_closure, closure_kwargs={"ab": "cd"}
+                    mll=mll, closure=mock_closure, closure_kwargs={"ab": "cd"}
                 )
             mock_closure.assert_called_once_with(ab="cd")
 
     def _test_warnings(self, mll, ckpt):
-        r"""Test warning handling for `_fit_fallback`."""
+        r"""Test warning handling for ``_fit_fallback``."""
         optimizer = MockOptimizer(randomize_requires_grad=False)
         optimizer.warnings = [
             WarningMessage("test_runtime_warning", RuntimeWarning, __file__, 0),
@@ -246,9 +279,7 @@ class TestFitFallback(BotorchTestCase):
 
                 try:
                     fit._fit_fallback(
-                        mll,
-                        None,
-                        None,
+                        mll=mll,
                         max_attempts=2,
                         optimizer=optimizer,
                         warning_handler=warning_handler,
@@ -280,15 +311,13 @@ class TestFitFallback(BotorchTestCase):
 
         with self.assertRaises(ModelFittingError), catch_warnings():
             fit._fit_fallback(
-                mll,
-                None,
-                None,
+                mll=mll,
                 max_attempts=1,
                 optimizer=optimizer,
             )
 
     def _test_exceptions(self, mll, ckpt):
-        r"""Test exception handling for `_fit_fallback`."""
+        r"""Test exception handling for ``_fit_fallback``."""
         optimizer = MockOptimizer(exception=NotPSDError("not_psd"))
         with catch_warnings():
             # Test behavior when encountering a caught exception
@@ -297,9 +326,7 @@ class TestFitFallback(BotorchTestCase):
                 self.assertRaises(ModelFittingError),
             ):
                 fit._fit_fallback(
-                    mll,
-                    None,
-                    None,
+                    mll=mll,
                     max_attempts=1,
                     optimizer=optimizer,
                 )
@@ -312,9 +339,7 @@ class TestFitFallback(BotorchTestCase):
             # Test behavior when encountering an uncaught exception
             with self.assertRaisesRegex(NotPSDError, "not_psd"):
                 fit._fit_fallback(
-                    mll,
-                    None,
-                    None,
+                    mll=mll,
                     max_attempts=1,
                     optimizer=optimizer,
                     caught_exception_types=(),
@@ -330,9 +355,7 @@ class TestFitFallback(BotorchTestCase):
         max_attempts = 10
         with patch("botorch.fit.logger.debug") as mock_log:
             fit._fit_fallback(
-                mll,
-                None,
-                None,
+                mll=mll,
                 max_attempts=max_attempts,
                 pick_best_of_all_attempts=True,
                 optimizer=optimizer,
@@ -385,9 +408,7 @@ class TestFitFallbackApproximate(BotorchTestCase):
         # Test parameter updates
         with module_rollback_ctx(self.mll) as ckpt:
             fit._fit_fallback_approximate(
-                self.mll,
-                None,
-                None,
+                mll=self.mll,
                 closure=self.closure,
                 optimizer_kwargs={"step_limit": 3},
             )
@@ -395,36 +416,31 @@ class TestFitFallbackApproximate(BotorchTestCase):
                 self.assertFalse(param.equal(ckpt[name].values))
 
         # Test dispatching pattern
-        kwargs = {"full_batch_limit": float("inf")}
         with patch.object(fit, "_fit_fallback") as mock_fallback:
-            fit._fit_fallback_approximate(self.mll, None, None, full_batch_limit=1)
+            fit._fit_fallback_approximate(mll=self.mll, full_batch_limit=1)
             mock_fallback.assert_called_once_with(
-                self.mll,
-                None,
-                None,
+                mll=self.mll,
                 closure=None,
                 optimizer=fit_gpytorch_mll_torch,
             )
 
         with patch.object(fit, "_fit_fallback") as mock_fallback:
-            fit._fit_fallback_approximate(self.mll, None, None, **kwargs)
+            fit._fit_fallback_approximate(mll=self.mll, full_batch_limit=float("inf"))
             mock_fallback.assert_called_once_with(
-                self.mll,
-                None,
-                None,
+                mll=self.mll,
                 closure=None,
                 optimizer=fit_gpytorch_mll_scipy,
             )
 
         with patch.object(fit, "_fit_fallback") as mock_fallback:
             fit._fit_fallback_approximate(
-                self.mll, None, None, closure=self.closure, **kwargs
+                mll=self.mll,
+                closure=self.closure,
+                full_batch_limit=float("inf"),
             )
 
             mock_fallback.assert_called_once_with(
-                self.mll,
-                None,
-                None,
+                mll=self.mll,
                 closure=self.closure,
                 optimizer=fit_gpytorch_mll_torch,
             )
@@ -435,11 +451,9 @@ class TestFitFallbackApproximate(BotorchTestCase):
         ):
             mock_get_closure.return_value = "foo"
             fit._fit_fallback_approximate(
-                self.mll,
-                None,
-                None,
+                mll=self.mll,
                 data_loader=self.data_loader,
-                **kwargs,
+                full_batch_limit=float("inf"),
             )
             params = {n: p for n, p in self.mll.named_parameters() if p.requires_grad}
             mock_get_closure.assert_called_once_with(
@@ -448,9 +462,7 @@ class TestFitFallbackApproximate(BotorchTestCase):
                 parameters=params,
             )
             mock_fallback.assert_called_once_with(
-                self.mll,
-                None,
-                None,
+                mll=self.mll,
                 closure="foo",
                 optimizer=fit_gpytorch_mll_torch,
             )
@@ -460,9 +472,119 @@ class TestFitFallbackApproximate(BotorchTestCase):
             UnsupportedError, "Only one of `data_loader` or `closure` may be passed."
         ):
             fit._fit_fallback_approximate(
-                self.mll,
-                None,
-                None,
+                mll=self.mll,
                 closure=self.closure,
                 data_loader=self.data_loader,
             )
+
+
+class TestFitIndependent(BotorchTestCase):
+    """End-to-end integration tests for fit_gpytorch_mll with batched
+    independent fitting via fit_gpytorch_mll_scipy."""
+
+    def test_multi_output_independent_fitting(self):
+        """Fit a multi-output SingleTaskGP using independent per-output
+        optimization via fit_gpytorch_mll."""
+        with torch.random.fork_rng():
+            torch.manual_seed(0)
+            train_X = torch.linspace(0, 1, 10, dtype=torch.double).unsqueeze(-1)
+            train_F = torch.cat(
+                [torch.sin(2 * math.pi * train_X), torch.cos(2 * math.pi * train_X)],
+                dim=-1,
+            )
+            train_Y = train_F + 0.1 * torch.randn_like(train_F)
+
+        model = SingleTaskGP(train_X=train_X, train_Y=train_Y)
+        mll = ExactMarginalLogLikelihood(model.likelihood, model)
+
+        # Store initial parameter values.
+        initial_params = {
+            n: p.clone() for n, p in mll.named_parameters() if p.requires_grad
+        }
+
+        with catch_warnings(record=True):
+            fit_gpytorch_mll(
+                mll,
+                max_attempts=1,
+            )
+
+        # Model should be in eval mode after fitting.
+        self.assertFalse(model.training)
+
+        # At least some parameters should have changed.
+        any_changed = False
+        for n, p in mll.named_parameters():
+            if p.requires_grad and not p.equal(initial_params[n]):
+                any_changed = True
+                break
+        self.assertTrue(any_changed, "No parameters changed during fitting.")
+
+        # Verify predictions work.
+        test_X = torch.rand(5, 1, dtype=torch.double)
+        posterior = model.posterior(test_X)
+        self.assertEqual(posterior.mean.shape, torch.Size([5, 2]))
+        self.assertEqual(posterior.variance.shape, torch.Size([5, 2]))
+
+    def test_multi_output_with_transforms(self):
+        """Fit a multi-output model with input and outcome transforms."""
+        with torch.random.fork_rng():
+            torch.manual_seed(42)
+            train_X = torch.rand(15, 2, dtype=torch.double)
+            train_Y = torch.rand(15, 3, dtype=torch.double)
+
+        model = SingleTaskGP(
+            train_X=train_X,
+            train_Y=train_Y,
+            input_transform=Normalize(d=2),
+            outcome_transform=Standardize(m=3),
+        )
+        mll = ExactMarginalLogLikelihood(model.likelihood, model)
+
+        with catch_warnings(record=True):
+            fit_gpytorch_mll(
+                mll,
+                max_attempts=1,
+            )
+
+        self.assertFalse(model.training)
+        test_X = torch.rand(4, 2, dtype=torch.double)
+        posterior = model.posterior(test_X)
+        self.assertEqual(posterior.mean.shape, torch.Size([4, 3]))
+
+    def test_ensemble_model(self):
+        """Fit an EnsembleMapSaasSingleTaskGP using independent per-ensemble-member
+        optimization via fit_gpytorch_mll."""
+        from botorch.models.map_saas import EnsembleMapSaasSingleTaskGP
+
+        with torch.random.fork_rng():
+            torch.manual_seed(0)
+            train_X = torch.rand(10, 3, dtype=torch.double)
+            train_Y = torch.rand(10, 1, dtype=torch.double)
+
+        model = EnsembleMapSaasSingleTaskGP(
+            train_X=train_X, train_Y=train_Y, num_taus=3
+        )
+        mll = ExactMarginalLogLikelihood(model.likelihood, model)
+
+        initial_params = {
+            n: p.clone() for n, p in mll.named_parameters() if p.requires_grad
+        }
+
+        with catch_warnings(record=True):
+            fit_gpytorch_mll(
+                mll,
+                max_attempts=1,
+            )
+
+        self.assertFalse(model.training)
+
+        any_changed = False
+        for n, p in mll.named_parameters():
+            if p.requires_grad and not p.equal(initial_params[n]):
+                any_changed = True
+                break
+        self.assertTrue(any_changed, "No parameters changed during fitting.")
+
+        test_X = torch.rand(5, 3, dtype=torch.double)
+        posterior = model.posterior(test_X)
+        self.assertEqual(posterior.mean.shape, torch.Size([3, 5, 1]))

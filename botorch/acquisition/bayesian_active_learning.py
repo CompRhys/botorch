@@ -20,8 +20,10 @@ References
 
 from __future__ import annotations
 
+import math
 import warnings
 
+import torch
 from botorch.acquisition.acquisition import AcquisitionFunction, MCSamplerMixin
 from botorch.acquisition.objective import PosteriorTransform
 from botorch.models import ModelListGP
@@ -29,6 +31,7 @@ from botorch.models.fully_bayesian import MCMC_DIM, SaasFullyBayesianSingleTaskG
 from botorch.models.model import Model
 from botorch.sampling.base import MCSampler
 from botorch.utils.transforms import (
+    average_over_ensemble_models,
     concatenate_pending_points,
     is_fully_bayesian,
     t_batch_mode_transform,
@@ -94,7 +97,7 @@ class qBayesianActiveLearningByDisagreement(
             posterior_transform: A PosteriorTransform. If using a multi-output model,
                 a PosteriorTransform that transforms the multi-output posterior into a
                 single-output posterior is required.
-            X_pending: A `batch_shape x m x d`-dim Tensor of `m` design points
+            X_pending: A ``batch_shape x m x d``-dim Tensor of ``m`` design points
 
         """
         super().__init__(model=model)
@@ -104,17 +107,18 @@ class qBayesianActiveLearningByDisagreement(
 
     @concatenate_pending_points
     @t_batch_mode_transform()
+    @average_over_ensemble_models
     def forward(self, X: Tensor) -> Tensor:
-        r"""Evaluate qBayesianActiveLearningByDisagreement on the candidate set `X`.
+        r"""Evaluate qBayesianActiveLearningByDisagreement on the candidate set ``X``.
         A monte carlo-estimated information gain is computed over a Gaussian Mixture
         marginal posterior, and the Gaussian conditional posterior to obtain the
-        qBayesianActiveLearningByDisagreement on the candidate set `X`.
+        qBayesianActiveLearningByDisagreement on the candidate set ``X``.
 
         Args:
-            X: `batch_shape x q x D`-dim Tensor of input points.
+            X: ``batch_shape x q x D``-dim Tensor of input points.
 
         Returns:
-            A `batch_shape x num_models`-dim Tensor of BALD values.
+            A ``batch_shape x num_models``-dim Tensor of BALD values.
         """
         posterior = self.model.posterior(
             X, observation_noise=True, posterior_transform=self.posterior_transform
@@ -141,14 +145,19 @@ class qBayesianActiveLearningByDisagreement(
         # avg the probs over models in the mixture - dim (-2) will be broadcasted
         # with the num_models of the posterior --> querying all samples on all models
         # posterior.mvn takes q-dimensional input by default, which removes the q-dim
-        # component_sample_probs: num_models x num_samples x batch_shape x num_models
-        component_sample_probs = posterior.mvn.log_prob(prev_samples).exp()
+        # component_sample_log_probs:
+        #   num_models x num_samples x batch_shape x num_models
+        component_sample_log_probs = posterior.mvn.log_prob(prev_samples)
 
-        # average over mixture components
-        mixture_sample_probs = component_sample_probs.mean(dim=-1, keepdim=True)
+        # average over mixture components in log-space for numerical stability:
+        # log(mean(exp(x))) = logsumexp(x, dim) - log(N)
+        n_components = component_sample_log_probs.shape[-1]
+        mixture_sample_log_probs = torch.logsumexp(
+            component_sample_log_probs, dim=-1, keepdim=True
+        ) - math.log(n_components)
 
         # this is the average over the model and sample dim
-        prev_entropy = -mixture_sample_probs.log().mean(dim=[0, 1])
+        prev_entropy = -mixture_sample_log_probs.mean(dim=[0, 1])
 
         # the posterior entropy is an average entropy over gaussians, so no mixture
         post_entropy = -posterior.mvn.log_prob(samples.squeeze(-1)).mean(0)

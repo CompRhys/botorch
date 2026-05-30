@@ -34,6 +34,11 @@ Ensemble Model API
 Models
 -------------------------------------------
 
+Additive GP Models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. automodule:: botorch.models.additive_gp
+    :members:
+
 Cost Models (for cost-aware optimization)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .. automodule:: botorch.models.cost
@@ -87,6 +92,19 @@ Model List GP Regression Models
 Multitask GP Models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .. automodule:: botorch.models.multitask
+    :members:
+
+Heterogeneous Search Space Multitask GP Models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. automodule:: botorch.models.heterogeneous_mtgp
+    :members:
+
+Hierarchical Search Space GP Models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. automodule:: botorch.models.hierarchical.conditional_kernel_gp
+    :members:
+
+.. automodule:: botorch.models.hierarchical.utils
     :members:
 
 Multi-Fidelity GP Regression Models
@@ -146,6 +164,12 @@ Kernels
 .. automodule:: botorch.models.kernels.orthogonal_additive_kernel
 .. autoclass:: OrthogonalAdditiveKernel
 
+.. automodule:: botorch.models.kernels.positive_index
+.. autoclass:: PositiveIndexKernel
+
+.. automodule:: botorch.models.kernels.heterogeneous_multitask
+.. autoclass:: MultiTaskConditionalKernel
+
 Likelihoods
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .. automodule:: botorch.models.likelihoods.pairwise
@@ -192,6 +216,11 @@ Inducing Point Allocators
 .. automodule:: botorch.models.utils.inducing_point_allocators
     :members:
     :private-members: _pivoted_cholesky_init
+
+Priors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. automodule:: botorch.models.utils.priors
+    :members:
 
 Other Utilties
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
